@@ -49,7 +49,7 @@ jobs:
           provenance: false
           sbom: true
       - name: export digest
-        run: mkdir -p /tmp/digests && printf '%s' "$DIGEST" > "/tmp/digests/${PLATFORM//\//-}"
+        run: mkdir -p /tmp/digests && printf '%s\n' "$DIGEST" > "/tmp/digests/${PLATFORM//\//-}"
         env:
           DIGEST: ${{ steps.build.outputs.digest }}
           PLATFORM: ${{ matrix.platform }}
