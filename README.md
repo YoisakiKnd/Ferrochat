@@ -21,7 +21,7 @@ docker compose up -d
 
 The compose file pulls `ghcr.io/yoisakiknd/ferrochat`. Set `FERROCHAT_TAG=0.1` to pin a release; the default is `latest`.
 
-Images are built only when a `v*` tag is pushed. `v1.2.3` publishes `1.2.3`, `1.2`, and `latest` for `linux/amd64` and `linux/arm64`. Pushes to `main` do not build an image.
+Images and CI run only when a `v*` tag is pushed. `v1.2.3` publishes `1.2.3`, `1.2`, and `latest` for `linux/amd64` and `linux/arm64`. Pushes to `main` do not build or test.
 
 To build locally:
 
