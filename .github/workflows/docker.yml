@@ -18,6 +18,8 @@ jobs:
       packages: write
     steps:
       - uses: actions/checkout@v4
+      - id: image
+        run: echo "name=$(echo "ghcr.io/${GITHUB_REPOSITORY}" | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_OUTPUT"
       - uses: docker/setup-buildx-action@v3
       - uses: docker/login-action@v3
         with:
@@ -27,7 +29,7 @@ jobs:
       - id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ghcr.io/${{ github.repository }}
+          images: ${{ steps.image.outputs.name }}
           tags: |
             type=raw,value=edge,enable={{is_default_branch}}
             type=semver,pattern={{version}}
@@ -40,7 +42,7 @@ jobs:
           file: docker/Dockerfile
           target: slim
           platforms: ${{ matrix.platform }}
-          outputs: type=image,name=ghcr.io/${{ github.repository }},push-by-digest=true,name-canonical=true,push=true
+          outputs: type=image,name=${{ steps.image.outputs.name }},push-by-digest=true,name-canonical=true,push=true
           cache-from: type=gha
           cache-to: type=gha,mode=max
           labels: ${{ steps.meta.outputs.labels }}
@@ -61,6 +63,8 @@ jobs:
     permissions:
       packages: write
     steps:
+      - id: image
+        run: echo "name=$(echo "ghcr.io/${GITHUB_REPOSITORY}" | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_OUTPUT"
       - uses: actions/download-artifact@v4
         with:
           pattern: digest-*
@@ -74,7 +78,7 @@ jobs:
       - uses: docker/metadata-action@v5
         id: meta
         with:
-          images: ghcr.io/${{ github.repository }}
+          images: ${{ steps.image.outputs.name }}
           tags: |
             type=raw,value=edge,enable={{is_default_branch}}
             type=semver,pattern={{version}}
@@ -83,4 +87,4 @@ jobs:
       - name: create manifest
         run: |
           docker buildx imagetools create $(jq -cr '.tags | map("-t " + .) | join(" ")' <<< "$DOCKER_METADATA_OUTPUT_JSON") \
-            $(printf 'ghcr.io/${{ github.repository }}@%s ' $(cat /tmp/digests/*))
+            $(printf '${{ steps.image.outputs.name }}@%s ' $(cat /tmp/digests/*))
