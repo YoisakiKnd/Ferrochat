@@ -1,0 +1,6 @@
+**/.git
+**/node_modules
+**/target
+frontend/build
+data
+*.db

@@ -1,0 +1,60 @@
+name: ci
+on:
+  push:
+  pull_request:
+jobs:
+  brand:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Reject leftover upstream branding
+        run: |
+          if grep -RInE --exclude-dir=reference --exclude-dir=node_modules --exclude-dir=target --exclude=LICENSE --exclude=NOTICE --exclude=README.md --exclude=ci.yml -e 'open.?webui' -e 'openwebui\.com' . \
+            | grep -v "src/lib/components/chat/Settings/About.svelte"; then
+            echo "unexpected upstream branding"
+            exit 1
+          fi
+  rust:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo fmt --all --manifest-path backend/Cargo.toml --check
+      - run: cargo test --manifest-path backend/Cargo.toml
+      - name: Migrations are append-only
+        run: |
+          python3 - << 'PY'
+          import hashlib, pathlib
+          root = pathlib.Path("backend/crates/db/migrations")
+          expected = {
+              "001_init.sql": open("backend/crates/db/migrations/001_init.sql.sha256").read().strip(),
+          }
+          for name, digest in expected.items():
+              got = hashlib.sha256((root/name).read_bytes()).hexdigest()
+              if got != digest:
+                  raise SystemExit(f"{name} changed ({got}); add a new migration instead")
+          print("migrations ok")
+          PY
+  frontend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm ci
+        working-directory: frontend
+      - run: npm run build
+        working-directory: frontend
+      - name: Type errors must not exceed baseline
+        working-directory: frontend
+        run: |
+          count=$(npx svelte-check --output machine | awk '/COMPLETED/ {print $5}')
+          baseline=$(cat .svelte-check-baseline)
+          echo "svelte-check errors: $count (baseline $baseline)"
+          test "$count" -le "$baseline"
+      - uses: dtolnay/rust-toolchain@stable
+      - run: npx playwright install --with-deps chromium
+        working-directory: frontend
+      - run: npx playwright test
+        working-directory: frontend

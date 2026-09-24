@@ -1,0 +1,13 @@
+Ferrochat
+Copyright (c) 2026 Ferrochat contributors
+
+This project is a derivative of Open WebUI v0.6.5, which is licensed under the
+BSD-3-Clause license. The original copyright notice is preserved in LICENSE.
+
+Open WebUI
+Copyright (c) 2023-2025 Timothy Jaeryang Baek
+https://github.com/open-webui/open-webui
+Tag: v0.6.5
+
+Do not merge Open WebUI code from v0.6.6 or later into this tree. Those
+releases add a brand-retention clause that is not part of the v0.6.5 license.

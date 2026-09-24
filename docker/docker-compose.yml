@@ -1,0 +1,15 @@
+services:
+  ferrochat:
+    image: ghcr.io/OWNER/ferrochat:latest
+    ports:
+      - "3000:8080"
+    volumes:
+      - ferrochat-data:/data
+    env_file:
+      - .env
+    environment:
+      FERROCHAT_DATA_DIR: /data
+    restart: unless-stopped
+
+volumes:
+  ferrochat-data:
