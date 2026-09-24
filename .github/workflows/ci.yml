@@ -20,6 +20,8 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - run: cargo fmt --all --manifest-path backend/Cargo.toml --check
+      - name: Stub frontend build for rust-embed
+        run: mkdir -p frontend/build && printf '<!doctype html><title>Ferrochat</title>' > frontend/build/index.html
       - run: cargo test --manifest-path backend/Cargo.toml
       - name: Migrations are append-only
         run: |
