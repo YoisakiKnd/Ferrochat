@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { toast } from 'svelte-sonner';
-	import Fuse from 'fuse.js';
+	let FuseCtor: typeof import('fuse.js').default | null = null;
 
 	import dayjs from 'dayjs';
 	import relativeTime from 'dayjs/plugin/relativeTime';
@@ -75,7 +75,7 @@
 		await tick();
 	};
 
-	onMount(() => {
+	onMount(async () => {
 		let legacy_documents = $knowledge
 			.filter((item) => item?.meta?.document)
 			.map((item) => ({
@@ -150,7 +150,8 @@
 			}
 		);
 
-		fuse = new Fuse(items, {
+		FuseCtor = (await import('fuse.js')).default;
+		fuse = new FuseCtor(items, {
 			keys: ['name', 'description']
 		});
 	});

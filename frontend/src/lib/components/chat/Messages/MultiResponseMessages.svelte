@@ -51,10 +51,11 @@
 	let groupedMessageIds = {};
 	let groupedMessageIdsIdx = {};
 
-	let message = JSON.parse(JSON.stringify(history.messages[messageId]));
-	$: if (history.messages) {
-		if (JSON.stringify(message) !== JSON.stringify(history.messages[messageId])) {
-			message = JSON.parse(JSON.stringify(history.messages[messageId]));
+	let message = { ...history.messages[messageId] };
+	$: if (history.messages?.[messageId]) {
+		const next = history.messages[messageId];
+		if (message?.content !== next.content || message?.done !== next.done) {
+			message = { ...next };
 		}
 	}
 
@@ -264,8 +265,8 @@
 									{actionMessage}
 									{submitMessage}
 									{continueResponse}
-									regenerateResponse={async (message) => {
-										regenerateResponse(message);
+									regenerateResponse={async (message, modelId) => {
+										regenerateResponse(message, modelId);
 										await tick();
 										groupedMessageIdsIdx[modelIdx] =
 											groupedMessageIds[modelIdx].messageIds.length - 1;

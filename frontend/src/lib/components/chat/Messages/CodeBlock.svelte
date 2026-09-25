@@ -1,22 +1,15 @@
 <script lang="ts">
-	import mermaid from 'mermaid';
-
 	import { v4 as uuidv4 } from 'uuid';
 
-	import { getContext, onMount, tick, onDestroy } from 'svelte';
+	import { getContext, onMount } from 'svelte';
 	import { copyToClipboard } from '$lib/utils';
 
 	import 'highlight.js/styles/github-dark.min.css';
 
-	import PyodideWorker from '$lib/workers/pyodide.worker?worker';
-	import CodeEditor from '$lib/components/common/CodeEditor.svelte';
-	import SvgPanZoom from '$lib/components/common/SVGPanZoom.svelte';
-	import { config } from '$lib/stores';
-	import { executeCode } from '$lib/apis/utils';
-	import { toast } from 'svelte-sonner';
-	import ChevronUp from '$lib/components/icons/ChevronUp.svelte';
+	let SvgPanZoom = null;
 	import ChevronUpDown from '$lib/components/icons/ChevronUpDown.svelte';
-	import CommandLine from '$lib/components/icons/CommandLine.svelte';
+
+	let CodeEditor = null;
 
 	const i18n = getContext<import('svelte/store').Writable<import('i18next').i18n>>('i18n');
 
@@ -37,8 +30,6 @@
 	export let className = 'my-2';
 	export let editorClassName = '';
 	export let stickyButtonsClassName = 'top-8';
-
-	let pyodideWorker = null;
 
 	let _code = '';
 	$: if (code) {
@@ -88,236 +79,16 @@
 		}, 1000);
 	};
 
-	const checkPythonCode = (str) => {
-		// Check if the string contains typical Python syntax characters
-		const pythonSyntax = [
-			'def ',
-			'else:',
-			'elif ',
-			'try:',
-			'except:',
-			'finally:',
-			'yield ',
-			'lambda ',
-			'assert ',
-			'nonlocal ',
-			'del ',
-			'True',
-			'False',
-			'None',
-			' and ',
-			' or ',
-			' not ',
-			' in ',
-			' is ',
-			' with '
-		];
-
-		for (let syntax of pythonSyntax) {
-			if (str.includes(syntax)) {
-				return true;
-			}
-		}
-
-		// If none of the above conditions met, it's probably not Python code
-		return false;
-	};
-
-	const executePython = async (code) => {
-		result = null;
-		stdout = null;
-		stderr = null;
-
-		executing = true;
-
-		if ($config?.code?.engine === 'jupyter') {
-			const output = await executeCode(localStorage.token, code).catch((error) => {
-				toast.error(`${error}`);
-				return null;
-			});
-
-			if (output) {
-				if (output['stdout']) {
-					stdout = output['stdout'];
-					const stdoutLines = stdout.split('\n');
-
-					for (const [idx, line] of stdoutLines.entries()) {
-						if (line.startsWith('data:image/png;base64')) {
-							if (files) {
-								files.push({
-									type: 'image/png',
-									data: line
-								});
-							} else {
-								files = [
-									{
-										type: 'image/png',
-										data: line
-									}
-								];
-							}
-
-							if (stdout.startsWith(`${line}\n`)) {
-								stdout = stdout.replace(`${line}\n`, ``);
-							} else if (stdout.startsWith(`${line}`)) {
-								stdout = stdout.replace(`${line}`, ``);
-							}
-						}
-					}
-				}
-
-				if (output['result']) {
-					result = output['result'];
-					const resultLines = result.split('\n');
-
-					for (const [idx, line] of resultLines.entries()) {
-						if (line.startsWith('data:image/png;base64')) {
-							if (files) {
-								files.push({
-									type: 'image/png',
-									data: line
-								});
-							} else {
-								files = [
-									{
-										type: 'image/png',
-										data: line
-									}
-								];
-							}
-
-							if (result.startsWith(`${line}\n`)) {
-								result = result.replace(`${line}\n`, ``);
-							} else if (result.startsWith(`${line}`)) {
-								result = result.replace(`${line}`, ``);
-							}
-						}
-					}
-				}
-
-				output['stderr'] && (stderr = output['stderr']);
-			}
-
-			executing = false;
-		} else {
-			executePythonAsWorker(code);
-		}
-	};
-
-	const executePythonAsWorker = async (code) => {
-		let packages = [
-			code.includes('requests') ? 'requests' : null,
-			code.includes('bs4') ? 'beautifulsoup4' : null,
-			code.includes('numpy') ? 'numpy' : null,
-			code.includes('pandas') ? 'pandas' : null,
-			code.includes('sklearn') ? 'scikit-learn' : null,
-			code.includes('scipy') ? 'scipy' : null,
-			code.includes('re') ? 'regex' : null,
-			code.includes('seaborn') ? 'seaborn' : null,
-			code.includes('sympy') ? 'sympy' : null,
-			code.includes('tiktoken') ? 'tiktoken' : null,
-			code.includes('matplotlib') ? 'matplotlib' : null,
-			code.includes('pytz') ? 'pytz' : null
-		].filter(Boolean);
-
-		console.log(packages);
-
-		pyodideWorker = new PyodideWorker();
-
-		pyodideWorker.postMessage({
-			id: id,
-			code: code,
-			packages: packages
-		});
-
-		setTimeout(() => {
-			if (executing) {
-				executing = false;
-				stderr = 'Execution Time Limit Exceeded';
-				pyodideWorker.terminate();
-			}
-		}, 60000);
-
-		pyodideWorker.onmessage = (event) => {
-			console.log('pyodideWorker.onmessage', event);
-			const { id, ...data } = event.data;
-
-			console.log(id, data);
-
-			if (data['stdout']) {
-				stdout = data['stdout'];
-				const stdoutLines = stdout.split('\n');
-
-				for (const [idx, line] of stdoutLines.entries()) {
-					if (line.startsWith('data:image/png;base64')) {
-						if (files) {
-							files.push({
-								type: 'image/png',
-								data: line
-							});
-						} else {
-							files = [
-								{
-									type: 'image/png',
-									data: line
-								}
-							];
-						}
-
-						if (stdout.startsWith(`${line}\n`)) {
-							stdout = stdout.replace(`${line}\n`, ``);
-						} else if (stdout.startsWith(`${line}`)) {
-							stdout = stdout.replace(`${line}`, ``);
-						}
-					}
-				}
-			}
-
-			if (data['result']) {
-				result = data['result'];
-				const resultLines = result.split('\n');
-
-				for (const [idx, line] of resultLines.entries()) {
-					if (line.startsWith('data:image/png;base64')) {
-						if (files) {
-							files.push({
-								type: 'image/png',
-								data: line
-							});
-						} else {
-							files = [
-								{
-									type: 'image/png',
-									data: line
-								}
-							];
-						}
-
-						if (result.startsWith(`${line}\n`)) {
-							result = result.replace(`${line}\n`, ``);
-						} else if (result.startsWith(`${line}`)) {
-							result = result.replace(`${line}`, ``);
-						}
-					}
-				}
-			}
-
-			data['stderr'] && (stderr = data['stderr']);
-			data['result'] && (result = data['result']);
-
-			executing = false;
-		};
-
-		pyodideWorker.onerror = (event) => {
-			console.log('pyodideWorker.onerror', event);
-			executing = false;
-		};
-	};
-
 	let debounceTimeout;
 
 	const drawMermaidDiagram = async () => {
 		try {
+			const mermaid = (await import('mermaid')).default;
+			mermaid.initialize({
+				startOnLoad: false,
+				theme: document.documentElement.classList.contains('dark') ? 'dark' : 'default',
+				securityLevel: 'loose'
+			});
 			if (await mermaid.parse(code)) {
 				const { svg } = await mermaid.render(`mermaid-${uuidv4()}`, code);
 				mermaidHtml = svg;
@@ -378,29 +149,13 @@
 	};
 
 	onMount(async () => {
-		console.log('codeblock', lang, code);
-
 		if (lang) {
 			onCode({ lang, code });
 		}
-		if (document.documentElement.classList.contains('dark')) {
-			mermaid.initialize({
-				startOnLoad: true,
-				theme: 'dark',
-				securityLevel: 'loose'
-			});
+		if (lang === 'mermaid') {
+			SvgPanZoom = (await import('$lib/components/common/SVGPanZoom.svelte')).default;
 		} else {
-			mermaid.initialize({
-				startOnLoad: true,
-				theme: 'default',
-				securityLevel: 'loose'
-			});
-		}
-	});
-
-	onDestroy(() => {
-		if (pyodideWorker) {
-			pyodideWorker.terminate();
+			CodeEditor = (await import('$lib/components/common/CodeEditor.svelte')).default;
 		}
 	});
 </script>
@@ -408,8 +163,8 @@
 <div>
 	<div class="relative {className} flex flex-col rounded-lg" dir="ltr">
 		{#if lang === 'mermaid'}
-			{#if mermaidHtml}
-				<SvgPanZoom
+			{#if mermaidHtml && SvgPanZoom}
+				<svelte:component this={SvgPanZoom}
 					className=" border border-gray-100 dark:border-gray-850 rounded-lg max-h-fit overflow-hidden"
 					svg={mermaidHtml}
 					content={_token.text}
@@ -439,31 +194,6 @@
 						</div>
 					</button>
 
-					{#if ($config?.features?.enable_code_execution ?? true) && (lang.toLowerCase() === 'python' || lang.toLowerCase() === 'py' || (lang === '' && checkPythonCode(code)))}
-						{#if executing}
-							<div class="run-code-button bg-none border-none p-1 cursor-not-allowed">
-								{$i18n.t('Running')}
-							</div>
-						{:else if run}
-							<button
-								class="flex gap-1 items-center run-code-button bg-none border-none bg-gray-50 hover:bg-gray-100 dark:bg-gray-850 dark:hover:bg-gray-800 transition rounded-md px-1.5 py-0.5"
-								on:click={async () => {
-									code = _code;
-									await tick();
-									executePython(code);
-								}}
-							>
-								<div>
-									<CommandLine className="size-3" />
-								</div>
-
-								<div>
-									{$i18n.t('Run')}
-								</div>
-							</button>
-						{/if}
-					{/if}
-
 					{#if save}
 						<button
 							class="save-code-button bg-none border-none bg-gray-50 hover:bg-gray-100 dark:bg-gray-850 dark:hover:bg-gray-800 transition rounded-md px-1.5 py-0.5"
@@ -490,17 +220,22 @@
 				<div class=" pt-7 bg-gray-50 dark:bg-gray-850"></div>
 
 				{#if !collapsed}
-					<CodeEditor
-						value={code}
-						{id}
-						{lang}
-						onSave={() => {
-							saveCode();
-						}}
-						onChange={(value) => {
-							_code = value;
-						}}
-					/>
+					{#if CodeEditor}
+						<svelte:component
+							this={CodeEditor}
+							value={code}
+							{id}
+							{lang}
+							onSave={() => {
+								saveCode();
+							}}
+							onChange={(value) => {
+								_code = value;
+							}}
+						/>
+					{:else}
+						<pre class="px-4 py-3 text-sm overflow-x-auto">{code}</pre>
+					{/if}
 				{:else}
 					<div
 						class="bg-gray-50 dark:bg-black dark:text-white rounded-b-lg! pt-2 pb-2 px-4 flex flex-col gap-2 text-xs"

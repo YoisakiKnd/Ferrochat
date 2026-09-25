@@ -22,7 +22,7 @@
 
 	export let user;
 
-	export let history;
+	export let history: { messages: Record<string, any>; currentId?: string | null };
 	export let messageId;
 
 	export let siblings;
@@ -45,10 +45,11 @@
 	let editedContent = '';
 	let messageEditTextAreaElement: HTMLTextAreaElement;
 
-	let message = JSON.parse(JSON.stringify(history.messages[messageId]));
-	$: if (history.messages) {
-		if (JSON.stringify(message) !== JSON.stringify(history.messages[messageId])) {
-			message = JSON.parse(JSON.stringify(history.messages[messageId]));
+	let message = { ...history.messages[messageId] };
+	$: if (!edit && history.messages?.[messageId]) {
+		const next = history.messages[messageId];
+		if (message?.content !== next.content || message?.done !== next.done) {
+			message = { ...next };
 		}
 	}
 

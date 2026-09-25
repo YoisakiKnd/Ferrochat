@@ -6,6 +6,7 @@ use std::collections::HashMap;
 use std::process::Stdio;
 use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::{Arc, LazyLock};
+use std::time::{Duration, Instant};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStdin};
 use tokio::sync::Mutex;
@@ -114,14 +115,16 @@ static POOL: LazyLock<Mutex<HashMap<String, Arc<Session>>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
 struct Session {
-    _child: Child,
+    child: Mutex<Child>,
     stdin: Mutex<ChildStdin>,
     lines: Mutex<tokio::io::Lines<BufReader<tokio::process::ChildStdout>>>,
     next_id: AtomicI64,
+    last_used: Mutex<Instant>,
 }
 
 impl Session {
     async fn call(&self, method: &str, params: Value) -> Result<Value, AppError> {
+        *self.last_used.lock().await = Instant::now();
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         let call = json!({ "jsonrpc": "2.0", "id": id, "method": method, "params": params });
         self.stdin
@@ -148,7 +151,23 @@ impl Session {
     }
 }
 
+async fn reap_idle_sessions() {
+    let mut pool = POOL.lock().await;
+    let mut stale = Vec::new();
+    for (key, session) in pool.iter() {
+        if session.last_used.lock().await.elapsed() > Duration::from_secs(300) {
+            stale.push(key.clone());
+        }
+    }
+    for key in stale {
+        if let Some(session) = pool.remove(&key) {
+            let _ = session.child.lock().await.start_kill();
+        }
+    }
+}
+
 async fn stdio_rpc(config: &Value, method: &str, params: Value) -> Result<Value, AppError> {
+    reap_idle_sessions().await;
     let command = config.get("command").and_then(|v| v.as_str()).unwrap_or("");
     if command.is_empty() {
         return Err(AppError::BadRequest("MCP command is required".into()));
@@ -185,10 +204,11 @@ async fn stdio_rpc(config: &Value, method: &str, params: Value) -> Result<Value,
         .take()
         .ok_or_else(|| AppError::Internal("no stdout".into()))?;
     let session = Arc::new(Session {
-        _child: child,
+        child: Mutex::new(child),
         stdin: Mutex::new(stdin),
         lines: Mutex::new(BufReader::new(stdout).lines()),
         next_id: AtomicI64::new(1),
+        last_used: Mutex::new(Instant::now()),
     });
     let init = json!({
         "jsonrpc": "2.0", "id": 1, "method": "initialize",

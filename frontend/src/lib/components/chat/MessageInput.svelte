@@ -1,8 +1,6 @@
 <script lang="ts">
 	import { toast } from 'svelte-sonner';
 	import { v4 as uuidv4 } from 'uuid';
-	import { createPicker, getAuthToken } from '$lib/utils/google-drive-picker';
-	import { pickAndDownloadFile } from '$lib/utils/onedrive-file-picker';
 
 	import { onMount, tick, getContext, createEventDispatcher, onDestroy } from 'svelte';
 	const dispatch = createEventDispatcher();
@@ -37,7 +35,6 @@
 	import FilesOverlay from './MessageInput/FilesOverlay.svelte';
 	import Commands from './MessageInput/Commands.svelte';
 
-	import RichTextInput from '../common/RichTextInput.svelte';
 	import Tooltip from '../common/Tooltip.svelte';
 	import FileItem from '../common/FileItem.svelte';
 	import Image from '../common/Image.svelte';
@@ -97,6 +94,22 @@
 
 	let chatInputContainerElement;
 	let chatInputElement;
+	let RichTextInput = null;
+	let richReady = false;
+	let richLoading = false;
+	let plainFocused = false;
+
+	const loadRichText = () => {
+		if (richReady || richLoading || !($settings?.richTextInput ?? true)) return;
+		richLoading = true;
+		import('../common/RichTextInput.svelte').then((mod) => {
+			RichTextInput = mod.default;
+			richReady = true;
+			if (plainFocused) {
+				tick().then(() => document.getElementById('chat-input')?.focus());
+			}
+		});
+	};
 
 	let filesInputElement;
 	let commandsElement;
@@ -323,6 +336,9 @@
 			const chatInput = document.getElementById('chat-input');
 			chatInput?.focus();
 		}, 0);
+		const schedule =
+			window.requestIdleCallback ?? ((cb) => window.setTimeout(cb, 300));
+		schedule(() => loadRichText());
 
 		window.addEventListener('keydown', handleKeyDown);
 
@@ -333,6 +349,9 @@
 		dropzoneElement?.addEventListener('dragover', onDragOver);
 		dropzoneElement?.addEventListener('drop', onDrop);
 		dropzoneElement?.addEventListener('dragleave', onDragLeave);
+
+		window.visualViewport?.addEventListener('resize', onVisualViewport);
+		window.visualViewport?.addEventListener('scroll', onVisualViewport);
 	});
 
 	onDestroy(() => {
@@ -346,7 +365,20 @@
 			dropzoneElement?.removeEventListener('drop', onDrop);
 			dropzoneElement?.removeEventListener('dragleave', onDragLeave);
 		}
+		window.visualViewport?.removeEventListener('resize', onVisualViewport);
+		window.visualViewport?.removeEventListener('scroll', onVisualViewport);
 	});
+
+	const onVisualViewport = () => {
+		const viewport = window.visualViewport;
+		const input = document.getElementById('chat-input');
+		if (!viewport || !input) return;
+		const keyboard = Math.max(0, window.innerHeight - viewport.height - viewport.offsetTop);
+		input.style.scrollMarginBottom = `${keyboard + 24}px`;
+		if (keyboard > 0 && document.activeElement === input) {
+			input.scrollIntoView({ block: 'nearest' });
+		}
+	};
 </script>
 
 <FilesOverlay show={dragged} />
@@ -409,7 +441,7 @@
 													: `${WEBUI_BASE_URL}/static/favicon.png`)}
 										/>
 										<div class="translate-y-[0.5px]">
-											Talking to <span class=" font-medium">{atSelectedModel.name}</span>
+											{$i18n.t('Talking to {{name}}', { name: atSelectedModel.name })}
 										</div>
 									</div>
 									<div>
@@ -599,12 +631,13 @@
 								{/if}
 
 								<div class="px-2.5">
-									{#if $settings?.richTextInput ?? true}
+									{#if ($settings?.richTextInput ?? true) && richReady && RichTextInput}
 										<div
 											class="scrollbar-hidden text-left bg-transparent dark:text-gray-100 outline-hidden w-full pt-3 px-1 resize-none h-fit max-h-80 overflow-auto"
 											id="chat-input-container"
 										>
-											<RichTextInput
+											<svelte:component
+												this={RichTextInput}
 												bind:this={chatInputElement}
 												bind:value={prompt}
 												id="chat-input"
@@ -823,6 +856,11 @@
 											class="scrollbar-hidden bg-transparent dark:text-gray-100 outline-hidden w-full pt-3 px-1 resize-none"
 											placeholder={placeholder ? placeholder : $i18n.t('Send a Message')}
 											bind:value={prompt}
+											on:focus={(event) => {
+												plainFocused = true;
+												if (event.isTrusted) loadRichText();
+											}}
+											on:blur={() => (plainFocused = false)}
 											on:compositionstart={() => (isComposing = true)}
 											on:compositionend={() => (isComposing = false)}
 											on:keydown={async (e) => {
@@ -1039,41 +1077,6 @@
 											uploadFilesHandler={() => {
 												filesInputElement.click();
 											}}
-											uploadGoogleDriveHandler={async () => {
-												try {
-													const fileData = await createPicker();
-													if (fileData) {
-														const file = new File([fileData.blob], fileData.name, {
-															type: fileData.blob.type
-														});
-														await uploadFileHandler(file);
-													} else {
-														console.log('No file was selected from Google Drive');
-													}
-												} catch (error) {
-													console.error('Google Drive Error:', error);
-													toast.error(
-														$i18n.t('Error accessing Google Drive: {{error}}', {
-															error: error.message
-														})
-													);
-												}
-											}}
-											uploadOneDriveHandler={async () => {
-												try {
-													const fileData = await pickAndDownloadFile();
-													if (fileData) {
-														const file = new File([fileData.blob], fileData.name, {
-															type: fileData.blob.type || 'application/octet-stream'
-														});
-														await uploadFileHandler(file);
-													} else {
-														console.log('No file was selected from OneDrive');
-													}
-												} catch (error) {
-													console.error('OneDrive Error:', error);
-												}
-											}}
 											onClose={async () => {
 												await tick();
 
@@ -1162,7 +1165,7 @@
 													</Tooltip>
 												{/if}
 
-												{#if $config?.features?.enable_code_interpreter && ($_user.role === 'admin' || $_user?.permissions?.features?.code_interpreter)}
+												{#if false && $config?.features?.enable_code_interpreter && ($_user.role === 'admin' || $_user?.permissions?.features?.code_interpreter)}
 													<Tooltip content={$i18n.t('Execute code for analysis')} placement="top">
 														<button
 															on:click|preventDefault={() =>
@@ -1190,6 +1193,7 @@
 											<div class=" flex items-center">
 												<Tooltip content={$i18n.t('Stop')}>
 													<button
+														id="stop-response-button"
 														class="bg-white hover:bg-gray-100 text-gray-800 dark:bg-gray-700 dark:text-white dark:hover:bg-gray-800 transition rounded-full p-1.5"
 														on:click={() => {
 															stopResponse();

@@ -74,6 +74,7 @@
 
 	// Pagination variables
 	let chatListLoading = false;
+	let chatRenderLimit = 40;
 	let allChatsLoaded = false;
 
 	let folders = {};
@@ -621,6 +622,28 @@
 			</div>
 		{/if}
 
+		<div class="px-1.5 flex justify-center text-gray-800 dark:text-gray-200">
+			<a
+				class="grow flex items-center space-x-3 rounded-lg px-2 py-[7px] hover:bg-gray-100 dark:hover:bg-gray-900 transition"
+				href="/tools"
+				on:click={() => {
+					selectedChatId = null;
+					chatId.set('');
+					if ($mobile) showSidebar.set(false);
+				}}
+				draggable="false"
+			>
+				<div class="self-center">
+					<svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" class="size-[1.1rem]">
+						<path stroke-linecap="round" stroke-linejoin="round" d="M11.42 15.17 17.25 21A2.652 2.652 0 0 0 21 17.25l-5.877-5.877M11.42 15.17l2.496-3.03c.317-.384.74-.626 1.208-.766M11.42 15.17l-4.655 5.653a2.548 2.548 0 1 1-3.586-3.586l6.837-5.63m5.108-.233c.55-.164 1.163-.188 1.743-.14a4.5 4.5 0 0 0 4.486-6.336l-3.276 3.277a3.004 3.004 0 0 1-2.25-2.25l3.276-3.276a4.5 4.5 0 0 0-6.336 4.486c.091 1.076-.071 2.264-.904 2.95l-.102.085" />
+					</svg>
+				</div>
+				<div class="flex self-center translate-y-[0.5px]">
+					<div class="self-center font-medium text-sm font-primary">{$i18n.t('Tools')}</div>
+				</div>
+			</a>
+		</div>
+
 		<div class="relative {$temporaryChatEnabled ? 'opacity-20' : ''}">
 			{#if $temporaryChatEnabled}
 				<div class="absolute z-40 w-full h-full flex justify-center"></div>
@@ -781,6 +804,7 @@
 										className=""
 										id={chat.id}
 										title={chat.title}
+										snippet={chat.snippet ?? ''}
 										{shiftKey}
 										selected={selectedChatId === chat.id}
 										on:select={() => {
@@ -822,7 +846,7 @@
 				<div class=" flex-1 flex flex-col overflow-y-auto scrollbar-hidden">
 					<div class="pt-1.5">
 						{#if $chats}
-							{#each $chats as chat, idx}
+							{#each $chats.slice(0, chatRenderLimit) as chat, idx}
 								{#if idx === 0 || (idx > 0 && chat.time_range !== $chats[idx - 1].time_range)}
 									<div
 										class="w-full pl-2.5 text-xs text-gray-500 dark:text-gray-500 font-medium {idx ===
@@ -856,6 +880,7 @@
 									className=""
 									id={chat.id}
 									title={chat.title}
+									snippet={chat.snippet ?? ''}
 									{shiftKey}
 									selected={selectedChatId === chat.id}
 									on:select={() => {
@@ -874,7 +899,14 @@
 								/>
 							{/each}
 
-							{#if $scrollPaginationEnabled && !allChatsLoaded}
+							{#if $chats.length > chatRenderLimit}
+								<button
+									class="w-full py-2 text-xs text-gray-500"
+									on:click={() => (chatRenderLimit += 40)}
+								>
+									{$i18n.t('Show more')}
+								</button>
+							{:else if $scrollPaginationEnabled && !allChatsLoaded}
 								<Loader
 									on:visible={(e) => {
 										if (!chatListLoading) {

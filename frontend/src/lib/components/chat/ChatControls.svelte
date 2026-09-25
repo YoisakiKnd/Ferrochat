@@ -1,6 +1,4 @@
 <script lang="ts">
-	import { SvelteFlowProvider } from '@xyflow/svelte';
-	import { slide } from 'svelte/transition';
 	import { Pane, PaneResizer } from 'paneforge';
 
 	import { onDestroy, onMount, tick } from 'svelte';
@@ -10,7 +8,7 @@
 	import Controls from './Controls/Controls.svelte';
 	import CallOverlay from './MessageInput/CallOverlay.svelte';
 	import Drawer from '../common/Drawer.svelte';
-	import Overview from './Overview.svelte';
+	import OverviewLazy from './OverviewLazy.svelte';
 	import EllipsisVertical from '../icons/EllipsisVertical.svelte';
 	import Artifacts from './Artifacts.svelte';
 	import { min } from '@floating-ui/utils';
@@ -88,8 +86,7 @@
 		// initialize the minSize based on the container width
 		minSize = Math.floor((350 / container.clientWidth) * 100);
 
-		// Create a new ResizeObserver instance
-		const resizeObserver = new ResizeObserver((entries) => {
+		resizeObserver = new ResizeObserver((entries) => {
 			for (let entry of entries) {
 				const width = entry.contentRect.width;
 				// calculate the percentage of 200px
@@ -112,7 +109,10 @@
 		document.addEventListener('mouseup', onMouseUp);
 	});
 
+	let resizeObserver: ResizeObserver | null = null;
+
 	onDestroy(() => {
+		resizeObserver?.disconnect();
 		showControls.set(false);
 
 		mediaQuery.removeEventListener('change', handleMediaQuery);
@@ -135,8 +135,7 @@
 	}
 </script>
 
-<SvelteFlowProvider>
-	{#if !largeScreen}
+{#if !largeScreen}
 		{#if $showControls}
 			<Drawer
 				show={$showControls}
@@ -168,7 +167,7 @@
 					{:else if $showArtifacts}
 						<Artifacts {history} />
 					{:else if $showOverview}
-						<Overview
+						<OverviewLazy
 							{history}
 							on:nodeclick={(e) => {
 								showMessage(e.detail.node.data.message);
@@ -249,7 +248,7 @@
 						{:else if $showArtifacts}
 							<Artifacts {history} overlay={dragged} />
 						{:else if $showOverview}
-							<Overview
+							<OverviewLazy
 								{history}
 								on:nodeclick={(e) => {
 									if (e.detail.node.data.message.favorite) {
@@ -279,4 +278,3 @@
 			{/if}
 		</Pane>
 	{/if}
-</SvelteFlowProvider>

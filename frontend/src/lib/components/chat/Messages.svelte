@@ -30,7 +30,10 @@
 	export let user = $_user;
 
 	export let prompt;
-	export let history = {};
+	export let history: {
+		messages: Record<string, any>;
+		currentId: string | null;
+	} = { messages: {}, currentId: null };
 	export let selectedModels;
 	export let atSelectedModel;
 

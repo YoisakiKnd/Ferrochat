@@ -34,6 +34,20 @@ docker run -p 3000:8080 -v ferrochat-data:/data ferrochat
 
 Set `FERROCHAT_PROVIDER_OPENAI_API_KEY` (or `DEEPSEEK`, `ANTHROPIC`, `GEMINI`, `GROQ`, `OPENROUTER`, `SILICONFLOW`, `OLLAMA`, `AZURE`) to enable a built-in provider on first start.
 
+Web search is off until an admin saves an engine under Settings, Web Search. SearXNG is the recommended engine:
+
+```bash
+docker compose -f docker-compose.searxng.yml up -d
+```
+
+Point Ferrochat at `http://127.0.0.1:8088`. Models with the `web` capability can use the provider’s own search instead; if that model cannot search, Ferrochat falls back to the configured engine.
+
+Voice input uses the browser speech recognizer. Admins can switch transcription and speech to an OpenAI-compatible endpoint under Settings, Audio. Sidebar search matches message text and shows a short hit under the chat title.
+
+The sidebar Tools page translates, polishes, or summarizes text with a model you already enabled. It does not create a chat. Summarize can search the web when an engine is configured. Long chats can keep only the last N messages (Settings, General) and reuse a stored summary of the older ones. Set input and output price per million tokens on Admin, Models to show a cost. When a provider does not report usage, the token line is marked as an estimate. Memory suggestions appear under a reply and are saved only after you confirm. A temporary chat is not written to the database.
+
+On this machine the release binary is 26.4 MB, idle RSS is 6.5 MB, and ten simultaneous mock replies peaked at 28.3 MB. The chat page still loads about 3.6 MB of JavaScript because the editor chunk is 2.0 MB. See `docs/metrics.md`. The slim image was not built here because Docker is not installed.
+
 ## Configuration
 
 | Variable | Default | Purpose |

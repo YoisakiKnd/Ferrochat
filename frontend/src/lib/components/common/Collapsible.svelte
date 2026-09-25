@@ -5,23 +5,14 @@
 	import { getContext, createEventDispatcher } from 'svelte';
 	const i18n = getContext<import('svelte/store').Writable<import('i18next').i18n>>('i18n');
 
-	import dayjs from '$lib/dayjs';
+	import dayjs, { loadDayjsLocale } from '$lib/dayjs';
 	import duration from 'dayjs/plugin/duration';
 	import relativeTime from 'dayjs/plugin/relativeTime';
 
 	dayjs.extend(duration);
 	dayjs.extend(relativeTime);
 
-	async function loadLocale(locales) {
-		for (const locale of locales) {
-			try {
-				dayjs.locale(locale);
-				break; // Stop after successfully loading the first available locale
-			} catch (error) {
-				console.error(`Could not load locale '${locale}':`, error);
-			}
-		}
-	}
+	const loadLocale = (locales) => loadDayjsLocale(locales);
 
 	// Assuming $i18n.languages is an array of language codes
 	$: loadLocale($i18n.languages);

@@ -84,6 +84,8 @@ pub struct Capabilities {
     pub tools: bool,
     pub web: bool,
     pub embedding: bool,
+    #[serde(default)]
+    pub audio: bool,
 }
 
 impl Default for Capabilities {
@@ -94,6 +96,7 @@ impl Default for Capabilities {
             tools: true,
             web: false,
             embedding: false,
+            audio: false,
         }
     }
 }
@@ -123,12 +126,17 @@ pub fn infer_capabilities(model_id: &str) -> Capabilities {
         || id.contains("qwq")
         || id.contains("gemini-2.5");
     let web = id.contains("search") || id.contains("online");
+    let audio = id.contains("whisper")
+        || id.contains("tts")
+        || id.contains("audio")
+        || id.contains("speech");
     Capabilities {
         vision,
         reasoning,
         tools: !embedding,
         web,
         embedding,
+        audio,
     }
 }
 

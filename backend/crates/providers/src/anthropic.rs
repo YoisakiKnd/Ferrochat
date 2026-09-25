@@ -81,6 +81,14 @@ impl ChatProvider for Anthropic {
                         ..Default::default()
                     });
                 }
+                if kind == "message_delta" {
+                    let usage = v.get("usage").cloned().unwrap_or(json!({}));
+                    return Ok(ChatChunk {
+                        prompt_tokens: usage.get("input_tokens").and_then(|n| n.as_i64()),
+                        completion_tokens: usage.get("output_tokens").and_then(|n| n.as_i64()),
+                        ..Default::default()
+                    });
+                }
                 if kind == "message_stop" {
                     return Ok(ChatChunk {
                         done: true,
@@ -144,6 +152,17 @@ fn to_anthropic(model: &str, incoming: &Value) -> Value {
     });
     if !system.is_empty() {
         body["system"] = json!(system);
+    }
+    if incoming
+        .get("native_search")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false)
+    {
+        body["tools"] = json!([{
+            "type": "web_search_20250305",
+            "name": "web_search",
+            "max_uses": 5
+        }]);
     }
     body
 }

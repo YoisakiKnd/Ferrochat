@@ -48,6 +48,8 @@ jobs:
         working-directory: frontend
       - run: npm run build
         working-directory: frontend
+      - name: Print artifact sizes
+        run: sh scripts/measure.sh
       - name: Type errors must not exceed baseline
         working-directory: frontend
         run: |

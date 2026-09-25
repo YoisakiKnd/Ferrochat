@@ -1,8 +1,6 @@
 <script lang="ts">
 	import { v4 as uuidv4 } from 'uuid';
 	import { toast } from 'svelte-sonner';
-	import mermaid from 'mermaid';
-	import { PaneGroup, Pane, PaneResizer } from 'paneforge';
 
 	import { getContext, onDestroy, onMount, tick } from 'svelte';
 	const i18n: Writable<i18nType> = getContext<import('svelte/store').Writable<import('i18next').i18n>>('i18n');
@@ -81,9 +79,7 @@
 
 	import Banner from '../common/Banner.svelte';
 	import MessageInput from '$lib/components/chat/MessageInput.svelte';
-	import Messages from '$lib/components/chat/Messages.svelte';
 	import Navbar from '$lib/components/chat/Navbar.svelte';
-	import ChatControls from './ChatControls.svelte';
 	import EventConfirmDialog from '../common/ConfirmDialog.svelte';
 	import Placeholder from './Placeholder.svelte';
 	import NotificationToast from '../NotificationToast.svelte';
@@ -96,6 +92,24 @@
 	const eventTarget = new EventTarget();
 	let controlPane;
 	let controlPaneComponent;
+	let historyFrame = 0;
+	const touchHistory = () => {
+		if (historyFrame) return;
+		historyFrame = requestAnimationFrame(() => {
+			historyFrame = 0;
+			history = history;
+		});
+	};
+
+	let ChatControlsComp = null;
+	let MessagesComp = null;
+	const loadMessages = () => {
+		if (MessagesComp) return;
+		import('$lib/components/chat/Messages.svelte').then((mod) => {
+			MessagesComp = mod.default;
+		});
+	};
+	$: if ($settings?.landingPageMode === 'chat' || history?.currentId) loadMessages();
 
 	let autoScroll = true;
 	let processing = '';
@@ -126,7 +140,12 @@
 	let chat = null;
 	let tags = [];
 
-	let history = {
+	let history: {
+		messages: Record<string, any>;
+		currentId: string | null;
+		summary?: string;
+		summaryCount?: number;
+	} = {
 		messages: {},
 		currentId: null
 	};
@@ -137,7 +156,7 @@
 	let prompt = '';
 	let chatFiles = [];
 	let files = [];
-	let params = {};
+	let params: Record<string, any> = {};
 
 	$: if (chatIdProp) {
 		(async () => {
@@ -209,6 +228,9 @@
 			selectedToolIds = (model?.info?.meta?.toolIds ?? []).filter((id) =>
 				$tools.find((t) => t.id === id)
 			);
+			if (model?.info?.meta?.web_search) {
+				webSearchEnabled = true;
+			}
 		}
 	};
 
@@ -266,8 +288,10 @@
 					chatCompletionEventHandler(data, message, event.chat_id);
 				} else if (type === 'chat:message:delta' || type === 'message') {
 					message.content += data.content;
+					touchHistory();
 				} else if (type === 'chat:message' || type === 'replace') {
 					message.content = data.content;
+					touchHistory();
 				} else if (type === 'chat:message:files' || type === 'files') {
 					message.files = data.files;
 				} else if (type === 'chat:title') {
@@ -277,6 +301,19 @@
 				} else if (type === 'chat:tags') {
 					chat = await getChatById(localStorage.token, $chatId);
 					allTags.set(await getAllTags(localStorage.token));
+				} else if (type === 'chat:summary') {
+					(history as { summary?: string; summaryCount?: number }).summary = data?.summary ?? '';
+					(history as { summary?: string; summaryCount?: number }).summaryCount =
+						data?.summary_count ?? 0;
+					history = history;
+					await tick();
+					await saveChatHandler($chatId, history);
+				} else if (type === 'chat:memory_suggestion') {
+					message.memorySuggestion = data;
+					history = history;
+				} else if (type === 'chat:follow_ups') {
+					message.followUps = data;
+					history = history;
 				} else if (type === 'source' || type === 'citation') {
 					if (data?.type === 'code_execution') {
 						// Code execution; update existing code execution by ID, or add new one.
@@ -396,10 +433,18 @@
 		}
 	};
 
+	const onFerroPrompt = (event: Event) => {
+		const text = (event as CustomEvent<string>).detail;
+		if (typeof text === 'string' && text.trim()) {
+			prompt = text;
+		}
+	};
+
 	onMount(async () => {
 		console.log('mounted');
 		window.addEventListener('message', onMessageHandler);
 		$socket?.on('chat-events', chatEventHandler);
+		window.addEventListener('ferrochat:prompt', onFerroPrompt);
 
 		if (!$chatId) {
 			chatIdUnsubscriber = chatId.subscribe(async (value) => {
@@ -432,6 +477,9 @@
 		}
 
 		showControls.subscribe(async (value) => {
+			if (value && !ChatControlsComp) {
+				ChatControlsComp = (await import('./ChatControls.svelte')).default;
+			}
 			if (controlPane && !$mobile) {
 				try {
 					if (value) {
@@ -457,127 +505,17 @@
 		chats.subscribe(() => {});
 	});
 
+	const chatIntervals = new Set<ReturnType<typeof setInterval>>();
+
 	onDestroy(() => {
 		chatIdUnsubscriber?.();
 		window.removeEventListener('message', onMessageHandler);
+		window.removeEventListener('ferrochat:prompt', onFerroPrompt);
 		$socket?.off('chat-events', chatEventHandler);
+		if (historyFrame) cancelAnimationFrame(historyFrame);
+		for (const timer of chatIntervals) clearInterval(timer);
+		chatIntervals.clear();
 	});
-
-	// File upload functions
-
-	const uploadGoogleDriveFile = async (fileData) => {
-		console.log('Starting uploadGoogleDriveFile with:', {
-			id: fileData.id,
-			name: fileData.name,
-			url: fileData.url,
-			headers: {
-				Authorization: `Bearer ${token}`
-			}
-		});
-
-		// Validate input
-		if (!fileData?.id || !fileData?.name || !fileData?.url || !fileData?.headers?.Authorization) {
-			throw new Error('Invalid file data provided');
-		}
-
-		const tempItemId = uuidv4();
-		const fileItem = {
-			type: 'file',
-			file: '',
-			id: null,
-			url: fileData.url,
-			name: fileData.name,
-			collection_name: '',
-			status: 'uploading',
-			error: '',
-			itemId: tempItemId,
-			size: 0
-		};
-
-		try {
-			files = [...files, fileItem];
-			console.log('Processing web file with URL:', fileData.url);
-
-			// Configure fetch options with proper headers
-			const fetchOptions = {
-				headers: {
-					Authorization: fileData.headers.Authorization,
-					Accept: '*/*'
-				},
-				method: 'GET'
-			};
-
-			// Attempt to fetch the file
-			console.log('Fetching file content from Google Drive...');
-			const fileResponse = await fetch(fileData.url, fetchOptions);
-
-			if (!fileResponse.ok) {
-				const errorText = await fileResponse.text();
-				throw new Error(`Failed to fetch file (${fileResponse.status}): ${errorText}`);
-			}
-
-			// Get content type from response
-			const contentType = fileResponse.headers.get('content-type') || 'application/octet-stream';
-			console.log('Response received with content-type:', contentType);
-
-			// Convert response to blob
-			console.log('Converting response to blob...');
-			const fileBlob = await fileResponse.blob();
-
-			if (fileBlob.size === 0) {
-				throw new Error('Retrieved file is empty');
-			}
-
-			console.log('Blob created:', {
-				size: fileBlob.size,
-				type: fileBlob.type || contentType
-			});
-
-			// Create File object with proper MIME type
-			const file = new File([fileBlob], fileData.name, {
-				type: fileBlob.type || contentType
-			});
-
-			console.log('File object created:', {
-				name: file.name,
-				size: file.size,
-				type: file.type
-			});
-
-			if (file.size === 0) {
-				throw new Error('Created file is empty');
-			}
-
-			// Upload file to server
-			console.log('Uploading file to server...');
-			const uploadedFile = await uploadFile(localStorage.token, file);
-
-			if (!uploadedFile) {
-				throw new Error('Server returned null response for file upload');
-			}
-
-			console.log('File uploaded successfully:', uploadedFile);
-
-			// Update file item with upload results
-			fileItem.status = 'uploaded';
-			fileItem.file = uploadedFile;
-			fileItem.id = uploadedFile.id;
-			fileItem.size = file.size;
-			fileItem.collection_name = uploadedFile?.meta?.collection_name;
-			fileItem.url = `${WEBUI_API_BASE_URL}/files/${uploadedFile.id}`;
-
-			files = files;
-			toast.success($i18n.t('File uploaded successfully'));
-		} catch (e) {
-			console.error('Error uploading file:', e);
-			files = files.filter((f) => f.itemId !== tempItemId);
-			toast.error(
-				$i18n.t('Error uploading file: {{error}}', {
-					error: e.message || 'Unknown error'
-				})
-			);
-		}
-	};
 
 	const uploadWeb = async (url) => {
 		console.log(url);
@@ -964,13 +902,15 @@
 	};
 
 	const getChatEventEmitter = async (modelId: string, chatId: string = '') => {
-		return setInterval(() => {
+		const timer = setInterval(() => {
 			$socket?.emit('usage', {
 				action: 'chat',
 				model: modelId,
 				chat_id: chatId
 			});
 		}, 1000);
+		chatIntervals.add(timer);
+		return timer;
 	};
 
 	const createMessagePair = async (userPrompt) => {
@@ -1190,9 +1130,13 @@
 			message.usage = usage;
 		}
 
-		history.messages[message.id] = message;
+		if (!done) {
+			touchHistory();
+		}
 
 		if (done) {
+			history.messages[message.id] = message;
+			history = history;
 			message.done = true;
 
 			if ($settings.responseAutoCopy) {
@@ -1470,7 +1414,10 @@
 					scrollToBottom();
 					await sendPromptSocket(_history, model, responseMessageId, _chatId);
 
-					if (chatEventEmitter) clearInterval(chatEventEmitter);
+					if (chatEventEmitter) {
+						clearInterval(chatEventEmitter);
+						chatIntervals.delete(chatEventEmitter);
+					}
 				} else {
 					toast.error($i18n.t(`Model {{modelId}} not found`, { modelId }));
 				}
@@ -1624,6 +1571,13 @@
 				session_id: $socket?.id,
 				chat_id: $chatId,
 				id: responseMessageId,
+				follow_up: ($settings?.followUps ?? true) && !$temporaryChatEnabled,
+				memory: ($settings?.memory ?? false) && ($settings?.memorySuggest ?? true),
+				memory_suggest: $settings?.memorySuggest ?? true,
+				recent_messages: $settings?.recentMessages ?? 0,
+				auto_summary: $settings?.autoSummary ?? true,
+				summary: (history as { summary?: string })?.summary ?? '',
+				summary_count: (history as { summaryCount?: number })?.summaryCount ?? 0,
 
 				...(!$temporaryChatEnabled &&
 				(messages.length == 1 ||
@@ -1776,8 +1730,8 @@
 		await sendPrompt(history, userPrompt, userMessageId);
 	};
 
-	const regenerateResponse = async (message) => {
-		console.log('regenerateResponse');
+	const regenerateResponse = async (message, modelId = null) => {
+		console.log('regenerateResponse', modelId);
 
 		if (history.currentId) {
 			let userMessage = history.messages[message.parentId];
@@ -1787,17 +1741,10 @@
 				scrollToBottom();
 			}
 
-			if ((userMessage?.models ?? [...selectedModels]).length == 1) {
-				// If user message has only one model selected, sendPrompt automatically selects it for regeneration
-				await sendPrompt(history, userPrompt, userMessage.id);
-			} else {
-				// If there are multiple models selected, use the model of the response message for regeneration
-				// e.g. many model chat
-				await sendPrompt(history, userPrompt, userMessage.id, {
-					modelId: message.model,
-					modelIdx: message.modelIdx
-				});
-			}
+			await sendPrompt(history, userPrompt, userMessage.id, {
+				modelId: modelId || ((userMessage?.models ?? [...selectedModels]).length > 1 ? message.model : null),
+				modelIdx: message.modelIdx
+			});
 		}
 	};
 
@@ -1965,8 +1912,8 @@
 			/>
 		{/if}
 
-		<PaneGroup direction="horizontal" class="w-full h-full">
-			<Pane defaultSize={50} class="h-full flex relative max-w-full flex-col">
+		<div class="w-full h-full flex">
+			<div class="h-full flex relative max-w-full flex-col flex-1 min-w-0">
 				<Navbar
 					bind:this={navbarElement}
 					chat={{
@@ -2000,7 +1947,9 @@
 							}}
 						>
 							<div class=" h-full w-full flex flex-col">
-								<Messages
+								{#if MessagesComp}
+								<svelte:component
+									this={MessagesComp}
 									chatId={$chatId}
 									bind:history
 									bind:autoScroll
@@ -2017,6 +1966,7 @@
 									{addMessages}
 									bottomPadding={files.length > 0}
 								/>
+								{/if}
 							</div>
 						</div>
 
@@ -2051,8 +2001,6 @@
 										await uploadWeb(data);
 									} else if (type === 'youtube') {
 										await uploadYoutubeTranscription(data);
-									} else if (type === 'google-drive') {
-										await uploadGoogleDriveFile(data);
 									}
 								}}
 								on:submit={async (e) => {
@@ -2113,9 +2061,11 @@
 						</div>
 					{/if}
 				</div>
-			</Pane>
+			</div>
 
-			<ChatControls
+			{#if ChatControlsComp}
+			<svelte:component
+				this={ChatControlsComp}
 				bind:this={controlPaneComponent}
 				bind:history
 				bind:chatFiles
@@ -2136,7 +2086,8 @@
 				{showMessage}
 				{eventTarget}
 			/>
-		</PaneGroup>
+			{/if}
+		</div>
 	{:else if loading}
 		<div class=" flex items-center justify-center h-full w-full">
 			<div class="m-auto">

@@ -1,6 +1,8 @@
 {
   "name": "Ferrochat",
   "short_name": "Ferrochat",
+  "start_url": "/",
+  "scope": "/",
   "icons": [
     {
       "src": "/static/web-app-manifest-192x192.png",

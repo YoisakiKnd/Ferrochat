@@ -23,15 +23,14 @@
 	import Highlight from '@tiptap/extension-highlight';
 	import Typography from '@tiptap/extension-typography';
 	import StarterKit from '@tiptap/starter-kit';
-	import { all, createLowlight } from 'lowlight';
+	import { common, createLowlight } from 'lowlight';
 
 	import { PASTED_TEXT_CHARACTER_LIMIT } from '$lib/constants';
 
 	export let oncompositionstart = (e) => {};
 	export let oncompositionend = (e) => {};
 
-	// create a lowlight instance with all languages loaded
-	const lowlight = createLowlight(all);
+	const lowlight = createLowlight(common);
 
 	export let className = 'input-prose';
 	export let placeholder = 'Type here...';

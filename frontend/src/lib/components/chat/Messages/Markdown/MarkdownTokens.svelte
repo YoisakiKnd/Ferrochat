@@ -6,14 +6,14 @@
 	import fileSaver from 'file-saver';
 	const { saveAs } = fileSaver;
 
-	import { marked, type Token } from 'marked';
+	import type { Token } from 'marked';
+	import { getMarked } from '$lib/utils/marked';
 	import { unescapeHtml } from '$lib/utils';
 
 	import { WEBUI_BASE_URL } from '$lib/constants';
 
 	import CodeBlock from '$lib/components/chat/Messages/CodeBlock.svelte';
 	import MarkdownInlineTokens from '$lib/components/chat/Messages/Markdown/MarkdownInlineTokens.svelte';
-	import KatexRenderer from './KatexRenderer.svelte';
 	import AlertRenderer, { alertComponent } from './AlertRenderer.svelte';
 	import Collapsible from '$lib/components/common/Collapsible.svelte';
 	import Tooltip from '$lib/components/common/Tooltip.svelte';
@@ -259,7 +259,7 @@
 			<div class=" mb-1.5" slot="content">
 				<svelte:self
 					id={`${id}-${tokenIdx}-d`}
-					tokens={marked.lexer(token.text)}
+					tokens={getMarked()?.lexer(token.text) ?? []}
 					attributes={token?.attributes}
 					{onTaskClick}
 					{onSourceClick}
@@ -313,11 +313,15 @@
 		{/if}
 	{:else if token.type === 'inlineKatex'}
 		{#if token.text}
-			<KatexRenderer content={token.text} displayMode={token?.displayMode ?? false} />
+			{#await import('./KatexRenderer.svelte') then mod}
+				<svelte:component this={mod.default} content={token.text} displayMode={token?.displayMode ?? false} />
+			{/await}
 		{/if}
 	{:else if token.type === 'blockKatex'}
 		{#if token.text}
-			<KatexRenderer content={token.text} displayMode={token?.displayMode ?? false} />
+			{#await import('./KatexRenderer.svelte') then mod}
+				<svelte:component this={mod.default} content={token.text} displayMode={token?.displayMode ?? false} />
+			{/await}
 		{/if}
 	{:else if token.type === 'space'}
 		<div class="my-2" />

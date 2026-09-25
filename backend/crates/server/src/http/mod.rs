@@ -1,7 +1,7 @@
 use crate::auth::{self, CurrentUser};
 use crate::App;
 use axum::{
-    extract::{Path, Query, State},
+    extract::{Multipart, Path, Query, State},
     http::{header, HeaderMap, StatusCode},
     response::{IntoResponse, Response},
     Json,
@@ -55,8 +55,22 @@ pub fn router() -> axum::Router<Arc<App>> {
         .route("/api/v1/users/user/settings", get(get_settings))
         .route("/api/v1/users/user/settings/update", post(set_settings))
         .route("/api/v1/configs/banners", get(banners))
+        .route(
+            "/api/v1/configs/web_search",
+            get(web_search_config).post(web_search_config_set),
+        )
+        .route("/api/v1/configs/web_search/test", post(web_search_test))
+        .route("/api/v1/audio/config", get(audio_config).post(audio_config_set))
+        .route("/api/v1/audio/transcriptions", post(audio_transcriptions))
+        .route("/api/v1/audio/speech", post(audio_speech))
+        .route("/api/v1/usage", get(usage_summary))
         .route("/api/v1/channels/", get(empty_list))
-        .route("/api/v1/memories/", get(empty_list))
+        .route("/api/v1/memories/", get(list_memories))
+        .route("/api/v1/memories/add", post(add_memory))
+        .route("/api/v1/memories/query", post(query_memories))
+        .route("/api/v1/memories/delete/user", delete(delete_memories))
+        .route("/api/v1/memories/{id}/update", post(update_memory))
+        .route("/api/v1/memories/{id}", delete(delete_memory))
         .route("/api/v1/functions/", get(empty_list))
         .route("/api/v1/knowledge/", get(empty_list))
         .route("/api/v1/knowledge/list", get(empty_list))
@@ -193,7 +207,19 @@ async fn config(State(app): State<Arc<App>>, headers: HeaderMap) -> Response {
         let features = body["features"].as_object_mut().unwrap();
         features.insert("enable_direct_connections".into(), json!(false));
         features.insert("enable_channels".into(), json!(false));
-        features.insert("enable_web_search".into(), json!(false));
+        let search_cfg = app
+            .db
+            .config_get("web_search")
+            .await
+            .ok()
+            .flatten()
+            .unwrap_or(json!({}));
+        let search_on = ferrochat_search::configured(&search_cfg)
+            || search_cfg
+                .get("prefer_native")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+        features.insert("enable_web_search".into(), json!(search_on));
         features.insert("enable_code_execution".into(), json!(false));
         features.insert("enable_code_interpreter".into(), json!(false));
         features.insert("enable_image_generation".into(), json!(false));
@@ -214,9 +240,32 @@ async fn config(State(app): State<Arc<App>>, headers: HeaderMap) -> Response {
             .unwrap_or(json!(""));
         body["default_prompt_suggestions"] = json!([]);
         body["user_count"] = json!(count);
-        body["permissions"] = permissions();
+        let mut perms = permissions();
+        if search_on {
+            perms["features"]["web_search"] = json!(true);
+        }
+        body["permissions"] = perms;
         body["file"] = json!({"max_size": 10_000_000, "max_count": 5});
-        body["audio"] = json!({"tts": {"engine": "", "voice": "", "split_on": "punctuation"}, "stt": {"engine": ""}});
+        let audio_cfg = app
+            .db
+            .config_get("audio")
+            .await
+            .ok()
+            .flatten()
+            .unwrap_or(json!({}));
+        let stt_engine = audio_cfg
+            .get("stt_engine")
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.is_empty())
+            .unwrap_or("web");
+        let tts_engine = audio_cfg
+            .get("tts_engine")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        body["audio"] = json!({
+            "tts": {"engine": tts_engine, "voice": audio_cfg.get("voice").and_then(|v| v.as_str()).unwrap_or(""), "split_on": "punctuation"},
+            "stt": {"engine": stt_engine}
+        });
     }
     ok(body)
 }
@@ -296,6 +345,32 @@ async fn chat_completions(
     user: CurrentUser,
     Json(body): Json<Value>,
 ) -> Response {
+    let direct = body.get("chat_id").and_then(|v| v.as_str()).unwrap_or("").is_empty()
+        && body.get("stream").and_then(|v| v.as_bool()).unwrap_or(false);
+    if direct {
+        let (tx, rx) = tokio::sync::mpsc::channel::<String>(32);
+        tokio::spawn(async move {
+            let err_tx = tx.clone();
+            if let Err(err) = crate::chat::stream_direct(app, user, body, tx).await {
+                let _ = err_tx
+                    .send(format!(
+                        "data: {}\n\n",
+                        serde_json::json!({"error": err.to_string()})
+                    ))
+                    .await;
+            }
+        });
+        let stream = futures::stream::unfold(rx, |mut rx| async move {
+            rx.recv()
+                .await
+                .map(|line| (Ok::<_, std::convert::Infallible>(bytes::Bytes::from(line)), rx))
+        });
+        return (
+            [(header::CONTENT_TYPE, "text/event-stream")],
+            axum::body::Body::from_stream(stream),
+        )
+            .into_response();
+    }
     match crate::chat::run(app, user, body).await {
         Ok(v) => ok(v),
         Err(e) => fail(e),
@@ -426,6 +501,286 @@ async fn signout() -> Response {
     (headers, Json(json!({"status": true}))).into_response()
 }
 
+fn require_admin(user: &CurrentUser) -> Result<(), AppError> {
+    if user.role == "admin" {
+        Ok(())
+    } else {
+        Err(AppError::Unauthorized("admin only".into()))
+    }
+}
+
+async fn web_search_config(State(app): State<Arc<App>>, user: CurrentUser) -> Response {
+    if let Err(err) = require_admin(&user) {
+        return fail(err);
+    }
+    match app.db.config_get("web_search").await {
+        Ok(Some(v)) => ok(v),
+        Ok(None) => ok(json!({
+            "engine": "searxng",
+            "url": "",
+            "api_key": "",
+            "cx": "",
+            "count": 5,
+            "fetch_content": true,
+            "prefer_native": false
+        })),
+        Err(err) => fail(err),
+    }
+}
+
+async fn web_search_config_set(
+    State(app): State<Arc<App>>,
+    user: CurrentUser,
+    Json(body): Json<Value>,
+) -> Response {
+    if let Err(err) = require_admin(&user) {
+        return fail(err);
+    }
+    let engine = body
+        .get("engine")
+        .and_then(|v| v.as_str())
+        .unwrap_or("searxng");
+    let stored = json!({
+        "engine": engine,
+        "url": body.get("url").and_then(|v| v.as_str()).unwrap_or(""),
+        "api_key": body.get("api_key").and_then(|v| v.as_str()).unwrap_or(""),
+        "cx": body.get("cx").and_then(|v| v.as_str()).unwrap_or(""),
+        "count": body.get("count").and_then(|v| v.as_u64()).unwrap_or(5).clamp(1, 8),
+        "fetch_content": body.get("fetch_content").and_then(|v| v.as_bool()).unwrap_or(true),
+        "prefer_native": body.get("prefer_native").and_then(|v| v.as_bool()).unwrap_or(false)
+    });
+    match app.db.config_set("web_search", &stored).await {
+        Ok(()) => ok(stored),
+        Err(err) => fail(err),
+    }
+}
+
+async fn web_search_test(
+    State(_app): State<Arc<App>>,
+    user: CurrentUser,
+    Json(body): Json<Value>,
+) -> Response {
+    if let Err(err) = require_admin(&user) {
+        return fail(err);
+    }
+    let query = ferrochat_search::Query {
+        engine: body
+            .get("engine")
+            .and_then(|v| v.as_str())
+            .unwrap_or("searxng")
+            .to_string(),
+        url: body
+            .get("url")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .into(),
+        api_key: body
+            .get("api_key")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .into(),
+        cx: body.get("cx").and_then(|v| v.as_str()).unwrap_or("").into(),
+        count: 3,
+        text: body
+            .get("query")
+            .and_then(|v| v.as_str())
+            .unwrap_or("ferrochat")
+            .to_string(),
+    };
+    match ferrochat_search::search(&query).await {
+        Ok(hits) => ok(json!({
+            "results": hits.iter().map(|hit| json!({"title": hit.title, "url": hit.url, "snippet": hit.snippet})).collect::<Vec<_>>()
+        })),
+        Err(err) => fail(err),
+    }
+}
+
+fn audio_endpoint(base: &str, tail: &str) -> String {
+    let base = base.trim().trim_end_matches('/');
+    let base = if base.is_empty() {
+        "https://api.openai.com/v1"
+    } else {
+        base
+    };
+    if base.ends_with(tail) {
+        base.to_string()
+    } else {
+        format!("{base}{tail}")
+    }
+}
+
+async fn stored_audio(app: &App) -> Value {
+    app.db
+        .config_get("audio")
+        .await
+        .ok()
+        .flatten()
+        .unwrap_or(json!({}))
+}
+
+async fn audio_config(State(app): State<Arc<App>>, user: CurrentUser) -> Response {
+    if let Err(err) = require_admin(&user) {
+        return fail(err);
+    }
+    let cfg = stored_audio(&app).await;
+    ok(json!({
+        "stt_engine": cfg.get("stt_engine").and_then(|v| v.as_str()).unwrap_or("web"),
+        "tts_engine": cfg.get("tts_engine").and_then(|v| v.as_str()).unwrap_or(""),
+        "url": cfg.get("url").and_then(|v| v.as_str()).unwrap_or(""),
+        "api_key": cfg.get("api_key").and_then(|v| v.as_str()).unwrap_or(""),
+        "stt_model": cfg.get("stt_model").and_then(|v| v.as_str()).unwrap_or("whisper-1"),
+        "tts_model": cfg.get("tts_model").and_then(|v| v.as_str()).unwrap_or("tts-1"),
+        "voice": cfg.get("voice").and_then(|v| v.as_str()).unwrap_or("alloy")
+    }))
+}
+
+async fn audio_config_set(
+    State(app): State<Arc<App>>,
+    user: CurrentUser,
+    Json(body): Json<Value>,
+) -> Response {
+    if let Err(err) = require_admin(&user) {
+        return fail(err);
+    }
+    if let Err(err) = app.db.config_set("audio", &body).await {
+        return fail(err);
+    }
+    ok(body)
+}
+
+async fn audio_transcriptions(
+    State(app): State<Arc<App>>,
+    user: CurrentUser,
+    mut multipart: Multipart,
+) -> Response {
+    let _ = user;
+    let cfg = stored_audio(&app).await;
+    let engine = cfg
+        .get("stt_engine")
+        .and_then(|v| v.as_str())
+        .unwrap_or("web");
+    if engine != "openai" {
+        return fail(AppError::BadRequest(
+            "browser speech recognition is used".into(),
+        ));
+    }
+    let mut bytes = None;
+    let mut filename = "audio.webm".to_string();
+    let mut mime = "application/octet-stream".to_string();
+    while let Ok(Some(field)) = multipart.next_field().await {
+        if field.name() == Some("file") {
+            filename = field.file_name().unwrap_or("audio.webm").to_string();
+            mime = field
+                .content_type()
+                .unwrap_or("application/octet-stream")
+                .to_string();
+            bytes = field.bytes().await.ok();
+        }
+    }
+    let Some(bytes) = bytes else {
+        return fail(AppError::BadRequest("no audio".into()));
+    };
+    let url = audio_endpoint(
+        cfg.get("url").and_then(|v| v.as_str()).unwrap_or(""),
+        "/audio/transcriptions",
+    );
+    let model = cfg
+        .get("stt_model")
+        .and_then(|v| v.as_str())
+        .unwrap_or("whisper-1");
+    let boundary = format!("ferrochat{}", uuid::Uuid::new_v4().simple());
+    let mut payload = Vec::new();
+    payload.extend_from_slice(format!("--{boundary}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"{filename}\"\r\nContent-Type: {mime}\r\n\r\n").as_bytes());
+    payload.extend_from_slice(&bytes);
+    payload.extend_from_slice(
+        format!("\r\n--{boundary}\r\nContent-Disposition: form-data; name=\"model\"\r\n\r\n{model}\r\n--{boundary}--\r\n").as_bytes(),
+    );
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(60))
+        .build()
+        .unwrap_or_else(|_| reqwest::Client::new());
+    let mut req = client
+        .post(url)
+        .header(
+            header::CONTENT_TYPE,
+            format!("multipart/form-data; boundary={boundary}"),
+        )
+        .body(payload);
+    if let Some(key) = cfg.get("api_key").and_then(|v| v.as_str()).filter(|s| !s.is_empty()) {
+        req = req.bearer_auth(key);
+    }
+    match req.send().await {
+        Ok(res) => {
+            let status = res.status();
+            let text = res.text().await.unwrap_or_default();
+            if !status.is_success() {
+                return fail(AppError::BadRequest(text));
+            }
+            match serde_json::from_str::<Value>(&text) {
+                Ok(value) => ok(value),
+                Err(_) => ok(json!({"text": text})),
+            }
+        }
+        Err(err) => fail(AppError::BadRequest(err.to_string())),
+    }
+}
+
+async fn audio_speech(
+    State(app): State<Arc<App>>,
+    user: CurrentUser,
+    Json(body): Json<Value>,
+) -> Response {
+    let _ = user;
+    let cfg = stored_audio(&app).await;
+    let url = audio_endpoint(
+        cfg.get("url").and_then(|v| v.as_str()).unwrap_or(""),
+        "/audio/speech",
+    );
+    let model = body
+        .get("model")
+        .and_then(|v| v.as_str())
+        .or_else(|| cfg.get("tts_model").and_then(|v| v.as_str()))
+        .unwrap_or("tts-1");
+    let voice = body
+        .get("voice")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+        .or_else(|| cfg.get("voice").and_then(|v| v.as_str()))
+        .unwrap_or("alloy");
+    let input = body.get("input").and_then(|v| v.as_str()).unwrap_or("");
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(60))
+        .build()
+        .unwrap_or_else(|_| reqwest::Client::new());
+    let mut req = client
+        .post(url)
+        .json(&json!({"model": model, "input": input, "voice": voice}));
+    if let Some(key) = cfg.get("api_key").and_then(|v| v.as_str()).filter(|s| !s.is_empty()) {
+        req = req.bearer_auth(key);
+    }
+    match req.send().await {
+        Ok(res) => {
+            let status = StatusCode::from_u16(res.status().as_u16()).unwrap_or(StatusCode::BAD_GATEWAY);
+            let bytes = res.bytes().await.unwrap_or_default();
+            if !status.is_success() {
+                return fail(AppError::BadRequest(String::from_utf8_lossy(&bytes).to_string()));
+            }
+            ([(header::CONTENT_TYPE, "audio/mpeg")], bytes).into_response()
+        }
+        Err(err) => fail(AppError::BadRequest(err.to_string())),
+    }
+}
+
+async fn usage_summary(State(app): State<Arc<App>>, user: CurrentUser) -> Response {
+    if let Err(err) = require_admin(&user) {
+        return fail(err);
+    }
+    match app.db.usage_summary().await {
+        Ok(rows) => ok(json!(rows)),
+        Err(err) => fail(err),
+    }
+}
+
 async fn admin_config(user: CurrentUser) -> Response {
     let _ = user;
     ok(json!({"SHOW_ADMIN_DETAILS": true, "ENABLE_SIGNUP": false, "DEFAULT_USER_ROLE": "admin"}))
@@ -434,6 +789,76 @@ async fn admin_config_set(user: CurrentUser, Json(body): Json<Value>) -> Respons
     let _ = user;
     ok(body)
 }
+async fn list_memories(State(app): State<Arc<App>>, user: CurrentUser) -> Response {
+    match app.db.list_memories(&user.id).await {
+        Ok(items) => ok(json!(items)),
+        Err(err) => fail(err),
+    }
+}
+
+async fn add_memory(
+    State(app): State<Arc<App>>,
+    user: CurrentUser,
+    Json(body): Json<Value>,
+) -> Response {
+    let content = body.get("content").and_then(|v| v.as_str()).unwrap_or("");
+    match app.db.add_memory(&user.id, content).await {
+        Ok(item) => ok(item),
+        Err(err) => fail(err),
+    }
+}
+
+async fn update_memory(
+    State(app): State<Arc<App>>,
+    user: CurrentUser,
+    Path(id): Path<String>,
+    Json(body): Json<Value>,
+) -> Response {
+    let content = body.get("content").and_then(|v| v.as_str()).unwrap_or("");
+    match app.db.update_memory(&user.id, &id, content).await {
+        Ok(item) => ok(item),
+        Err(err) => fail(err),
+    }
+}
+
+async fn delete_memory(
+    State(app): State<Arc<App>>,
+    user: CurrentUser,
+    Path(id): Path<String>,
+) -> Response {
+    match app.db.delete_memory(&user.id, &id).await {
+        Ok(true) => ok(json!(true)),
+        Ok(false) => fail(AppError::NotFound("memory not found".into())),
+        Err(err) => fail(err),
+    }
+}
+
+async fn delete_memories(State(app): State<Arc<App>>, user: CurrentUser) -> Response {
+    match app.db.delete_memories(&user.id).await {
+        Ok(()) => ok(json!(true)),
+        Err(err) => fail(err),
+    }
+}
+
+async fn query_memories(
+    State(app): State<Arc<App>>,
+    user: CurrentUser,
+    Json(body): Json<Value>,
+) -> Response {
+    let content = body.get("content").and_then(|v| v.as_str()).unwrap_or("");
+    match app.db.query_memories(&user.id, content, 5).await {
+        Ok(hits) => {
+            let documents: Vec<String> = hits.iter().map(|(text, _)| text.clone()).collect();
+            let metadatas: Vec<Value> = hits
+                .iter()
+                .map(|(_, created_at)| json!({"created_at": created_at}))
+                .collect();
+            ok(json!({"documents": [documents], "metadatas": [metadatas]}))
+        }
+        Err(err) => fail(err),
+    }
+}
+
 async fn empty_list(user: CurrentUser) -> Response {
     let _ = user;
     ok(json!([]))

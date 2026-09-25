@@ -2,7 +2,7 @@
 	import { settings, playingNotificationSound, isLastActiveTab } from '$lib/stores';
 	import DOMPurify from 'dompurify';
 
-	import { marked } from 'marked';
+	import { ensureMarked } from '$lib/utils/marked';
 	import { createEventDispatcher, onMount } from 'svelte';
 
 	const dispatch = createEventDispatcher();
@@ -10,6 +10,15 @@
 	export let onClick: Function = () => {};
 	export let title: string = 'HI';
 	export let content: string;
+	let contentHtml = '';
+
+	$: if (content) {
+		const value = content;
+		contentHtml = DOMPurify.sanitize(value);
+		ensureMarked().then((marked) => {
+			if (content === value) contentHtml = DOMPurify.sanitize(marked.parse(value));
+		});
+	}
 
 	onMount(() => {
 		if (!navigator.userActivation.hasBeenActive) {
@@ -47,7 +56,7 @@
 		{/if}
 
 		<div class=" line-clamp-2 text-xs self-center dark:text-gray-300 font-normal">
-			{@html DOMPurify.sanitize(marked(content))}
+			{@html contentHtml}
 		</div>
 	</div>
 </button>

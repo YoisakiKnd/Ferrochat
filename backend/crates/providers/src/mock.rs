@@ -55,6 +55,8 @@ impl ChatProvider for Mock {
             }),
             Ok(ChatChunk {
                 done: true,
+                prompt_tokens: Some(8),
+                completion_tokens: Some(1),
                 ..Default::default()
             }),
         ];

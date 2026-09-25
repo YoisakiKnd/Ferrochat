@@ -549,6 +549,16 @@
 									/>
 								</div>
 							</div>
+							<label class="mt-2 flex items-center gap-2 text-xs">
+								<input
+									type="checkbox"
+									checked={Boolean(info.meta['web_search'])}
+									on:change={(event) => {
+										info.meta['web_search'] = event.currentTarget.checked;
+									}}
+								/>
+								{$i18n.t('Web search by default')}
+							</label>
 
 							<div class="flex w-full justify-between">
 								<div class=" self-center text-xs font-semibold">

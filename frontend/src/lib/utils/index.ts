@@ -15,10 +15,6 @@ dayjs.extend(localizedFormat);
 import { WEBUI_BASE_URL } from '$lib/constants';
 import { TTS_RESPONSE_SPLIT } from '$lib/types';
 
-import { marked } from 'marked';
-import markedExtension from '$lib/utils/marked/extension';
-import markedKatexExtension from '$lib/utils/marked/katex-extension';
-import hljs from 'highlight.js';
 
 //////////////////////////
 // Helper functions
@@ -316,11 +312,17 @@ export const formatDate = (inputDate) => {
 
 export const copyToClipboard = async (text, formatted = false) => {
 	if (formatted) {
+		const [{ marked }, { default: markedExtension }, { default: markedKatexExtension }, { highlightCode }] =
+			await Promise.all([
+				import('marked'),
+				import('$lib/utils/marked/extension'),
+				import('$lib/utils/marked/katex-extension'),
+				import('$lib/utils/highlight')
+			]);
 		const options = {
 			throwOnError: false,
 			highlight: function (code, lang) {
-				const language = hljs.getLanguage(lang) ? lang : 'plaintext';
-				return hljs.highlight(code, { language }).value;
+				return highlightCode(code, lang);
 			}
 		};
 		marked.use(markedKatexExtension(options));

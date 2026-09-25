@@ -5,12 +5,18 @@
 	import Interface from './Settings/Interface.svelte';
 	import Providers from './Settings/Providers.svelte';
 	import Models from './Settings/Models.svelte';
+	import WebSearch from './Settings/WebSearch.svelte';
+	import Audio from './Settings/Audio.svelte';
+	import Usage from './Settings/Usage.svelte';
 
 	const i18n = getContext('i18n');
 	const tabs = [
 		['providers', 'Providers'],
 		['models', 'Models'],
 		['general', 'General'],
+		['web_search', 'Web Search'],
+		['audio', 'Audio'],
+		['usage', 'Usage'],
 		['interface', 'Interface']
 	];
 	let selectedTab = tabs.some(([id]) => id === $page.url.searchParams.get('tab'))
@@ -58,6 +64,12 @@
 			<Models on:providers={() => go('providers')} />
 		{:else if selectedTab === 'general'}
 			<General saveHandler={() => {}} on:save={() => {}} />
+		{:else if selectedTab === 'web_search'}
+			<WebSearch />
+		{:else if selectedTab === 'audio'}
+			<Audio />
+		{:else if selectedTab === 'usage'}
+			<Usage />
 		{:else if selectedTab === 'interface'}
 			<Interface />
 		{/if}

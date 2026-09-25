@@ -19,7 +19,9 @@ impl Db {
             .create_if_missing(true)
             .foreign_keys(true);
         let pool = SqlitePoolOptions::new()
-            .max_connections(8)
+            .max_connections(5)
+            .min_connections(1)
+            .idle_timeout(std::time::Duration::from_secs(60))
             .connect_with(opts)
             .await
             .map_err(|e| AppError::Internal(e.to_string()))?;
@@ -521,6 +523,25 @@ impl Db {
             .unwrap_or(false))
     }
 
+    pub async fn provider_model_web(
+        &self,
+        provider_id: &str,
+        model_id: &str,
+    ) -> Result<bool, AppError> {
+        let id = format!("{provider_id}:{model_id}");
+        let raw: Option<String> =
+            sqlx::query_scalar("SELECT capabilities_json FROM provider_models WHERE id = ?")
+                .bind(id)
+                .fetch_optional(&self.pool)
+                .await
+                .map_err(internal)?;
+        let Some(raw) = raw else {
+            return Ok(false);
+        };
+        let caps: Value = serde_json::from_str(&raw).unwrap_or(json!({}));
+        Ok(caps.get("web").and_then(|v| v.as_bool()).unwrap_or(false))
+    }
+
     pub async fn delete_provider_model(&self, id: &str) -> Result<(), AppError> {
         sqlx::query("DELETE FROM provider_models WHERE id = ?")
             .bind(id)
@@ -634,6 +655,47 @@ impl Db {
             .await
             .map_err(internal)?;
         }
+        let has_passages: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'file_passages'",
+        )
+        .fetch_one(&self.pool)
+        .await
+        .map_err(internal)?;
+        if has_passages == 0 {
+            let sql = include_str!("../migrations/003_file_passages.sql");
+            sqlx::raw_sql(sql)
+                .execute(&self.pool)
+                .await
+                .map_err(internal)?;
+        }
+        let has_memories: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'memories'",
+        )
+        .fetch_one(&self.pool)
+        .await
+        .map_err(internal)?;
+        if has_memories == 0 {
+            let sql = include_str!("../migrations/004_memories.sql");
+            sqlx::raw_sql(sql)
+                .execute(&self.pool)
+                .await
+                .map_err(internal)?;
+        }
+        let has_chat_fts: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'chats_fts'",
+        )
+        .fetch_one(&self.pool)
+        .await
+        .map_err(internal)?;
+        if has_chat_fts == 0 {
+            let sql = include_str!("../migrations/005_chat_search.sql");
+            sqlx::raw_sql(sql)
+                .execute(&self.pool)
+                .await
+                .map_err(internal)?;
+            self.reindex_chats().await?;
+        }
+        self.remove_builtin_presets().await?;
         Ok(())
     }
 

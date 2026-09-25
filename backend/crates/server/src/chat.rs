@@ -3,6 +3,7 @@ use crate::App;
 use ferrochat_core::AppError;
 use ferrochat_mcp::{self, ToolSpec};
 use ferrochat_providers::{build, next_key, ChatChunk, Conn};
+use ferrochat_search::{self, Hit, Query};
 use futures::StreamExt;
 use serde_json::{json, Value};
 use std::sync::Arc;
@@ -91,6 +92,7 @@ async fn drive(
         vision,
         &app.data_dir,
     );
+    attach_document_excerpts(&app, form, &mut messages).await;
     let defaults = app
         .db
         .model_params(&provider_id, &model_id)
@@ -114,12 +116,53 @@ async fn drive(
             );
         }
     }
+    let mut native_search = false;
+    if form
+        .pointer("/features/web_search")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false)
+    {
+        let (native, sources) =
+            prepare_web_search(&app, form, &mut messages, &adapter, &model_id, &provider_id).await;
+        native_search = native;
+        for source in sources {
+            emit(
+                &app,
+                form,
+                json!({
+                    "type": "source",
+                    "data": {
+                        "source": {"name": source["name"], "url": source["url"]},
+                        "document": [source["snippet"]],
+                        "metadata": [{"source": source["url"], "name": source["name"]}]
+                    }
+                }),
+            );
+        }
+    }
     let mut tools = load_tools(&app, form, extra_tools).await;
     let mut tool_schemas = openai_tools(&tools);
     let mut full = String::new();
     let mut reasoning = String::new();
     let mut reasoning_open = false;
+    let mut reported_prompt: Option<i64> = None;
+    let mut reported_completion: Option<i64> = None;
 
+    if let Some((summary, covered)) = compress_messages(
+        &adapter,
+        &model_id,
+        form,
+        &mut messages,
+    )
+    .await
+    {
+        emit(
+            &app,
+            form,
+            json!({"type": "chat:summary", "data": {"summary": summary, "summary_count": covered}}),
+        );
+    }
+    let prompt_tokens = estimate_tokens(&messages);
     for _round in 0..5 {
         if cancel.is_cancelled() {
             break;
@@ -129,6 +172,10 @@ async fn drive(
         body["params"] = merge_params(&defaults, body.get("params"));
         if !tool_schemas.is_empty() {
             body["tools"] = json!(tool_schemas);
+        }
+        body["provider_id"] = json!(provider_id);
+        if native_search {
+            body["native_search"] = json!(true);
         }
         let mut stream = adapter.chat_stream(&model_id, &body).await?;
         let mut calls: Vec<Accum> = Vec::new();
@@ -141,6 +188,12 @@ async fn drive(
                 let _ = app.db.mark_key_error(&provider_id, &key_fp, &err, 60).await;
                 return Err(AppError::BadRequest(err));
             }
+            if chunk.prompt_tokens.is_some() {
+                reported_prompt = chunk.prompt_tokens;
+            }
+            if chunk.completion_tokens.is_some() {
+                reported_completion = chunk.completion_tokens;
+            }
             apply_chunk(
                 &app,
                 form,
@@ -149,6 +202,20 @@ async fn drive(
                 &mut reasoning,
                 &mut reasoning_open,
             );
+            for (title, url) in &chunk.citations {
+                emit(
+                    &app,
+                    form,
+                    json!({
+                        "type": "source",
+                        "data": {
+                            "source": {"name": title, "url": url},
+                            "document": [title],
+                            "metadata": [{"source": url, "name": title}]
+                        }
+                    }),
+                );
+            }
             for delta in chunk.tool_calls {
                 let slot = if delta.index >= calls.len() {
                     calls.resize(delta.index + 1, Accum::default());
@@ -211,10 +278,38 @@ async fn drive(
     }
 
     let title = maybe_title(&app, &adapter, &model_id, form, &full).await;
+    let estimated = reported_prompt.is_none() || reported_completion.is_none();
+    let prompt_tokens = reported_prompt.unwrap_or(prompt_tokens);
+    let completion_tokens = reported_completion.unwrap_or_else(|| {
+        (full.chars().count() as i64 / 4).max(if full.is_empty() { 0 } else { 1 })
+    });
+    let stored = app
+        .db
+        .model_params(&provider_id, &model_id)
+        .await
+        .unwrap_or(json!({}));
+    let input_price = stored["input_price"]
+        .as_f64()
+        .unwrap_or_else(|| price_of(form, "input_price"));
+    let output_price = stored["output_price"]
+        .as_f64()
+        .unwrap_or_else(|| price_of(form, "output_price"));
+    let cost = (prompt_tokens as f64 * input_price + completion_tokens as f64 * output_price) / 1_000_000.0;
+    let usage = json!({
+        "prompt_tokens": prompt_tokens,
+        "completion_tokens": completion_tokens,
+        "total_tokens": prompt_tokens + completion_tokens,
+        "cost": cost,
+        "estimated": estimated
+    });
+    let _ = app
+        .db
+        .record_usage(&user.id, &requested, prompt_tokens, completion_tokens, cost)
+        .await;
     emit(
         &app,
         form,
-        json!({"type": "chat:completion", "data": {"done": true, "content": full, "title": title}}),
+        json!({"type": "chat:completion", "data": {"done": true, "content": full, "title": title, "usage": usage}}),
     );
     if let (Some(chat_id), Some(title)) = (
         form.get("chat_id").and_then(|v| v.as_str()),
@@ -244,6 +339,26 @@ async fn drive(
                 }
                 emit(&app, form, json!({"type": "chat:tags", "data": saved}));
             }
+        }
+    }
+    if form.get("follow_up").and_then(|v| v.as_bool()).unwrap_or(true) {
+        if let Some(questions) = follow_ups(&adapter, &model_id, &full).await {
+            emit(
+                &app,
+                form,
+                json!({"type": "chat:follow_ups", "data": questions}),
+            );
+        }
+    }
+    if form.get("memory").and_then(|v| v.as_bool()).unwrap_or(false)
+        && form.get("memory_suggest").and_then(|v| v.as_bool()).unwrap_or(true)
+    {
+        if let Some(fact) = suggest_memory(&adapter, &model_id, &full).await {
+            emit(
+                &app,
+                form,
+                json!({"type": "chat:memory_suggestion", "data": fact}),
+            );
         }
     }
     Ok(())
@@ -297,6 +412,277 @@ fn apply_chunk(
     }
 }
 
+pub async fn stream_direct(
+    app: Arc<App>,
+    user: CurrentUser,
+    form: Value,
+    tx: tokio::sync::mpsc::Sender<String>,
+) -> Result<(), AppError> {
+    let _ = user;
+    let requested = form
+        .get("model")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    let (provider_id, model_id, _system, _tools) = resolve(&app, &requested).await?;
+    let provider = app.db.provider(&provider_id).await?;
+    let tick = app
+        .key_tick
+        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let cooled = app
+        .db
+        .cooled_fingerprints(&provider_id)
+        .await
+        .unwrap_or_default();
+    let api_key = next_key_skip(provider["api_keys"].as_str().unwrap_or(""), tick, &cooled);
+    let conn = Conn {
+        kind: provider["type"].as_str().unwrap_or("openai").to_string(),
+        base_url: provider["base_url"].as_str().unwrap_or("").to_string(),
+        api_key,
+        headers: provider["headers"].clone(),
+        client: shared_client(),
+    };
+    let adapter = build(conn);
+    let mut body = form.clone();
+    body["provider_id"] = json!(provider_id);
+    if form
+        .pointer("/features/web_search")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false)
+    {
+        let mut messages = body.get("messages").cloned().unwrap_or(json!([]));
+        let (_native, sources) =
+            prepare_web_search(&app, &form, &mut messages, &adapter, &model_id, &provider_id).await;
+        body["messages"] = messages;
+        if !sources.is_empty() {
+            let _ = tx
+                .send(format!("data: {}\n\n", json!({"sources": sources})))
+                .await;
+        }
+    }
+    let mut stream = adapter.chat_stream(&model_id, &body).await?;
+    while let Some(item) = stream.next().await {
+        let chunk = item?;
+        if let Some(text) = chunk.content {
+            let data = json!({"choices":[{"delta":{"content": text}}]});
+            if tx.send(format!("data: {data}\n\n")).await.is_err() {
+                break;
+            }
+        }
+    }
+    let _ = tx.send("data: [DONE]\n\n".to_string()).await;
+    Ok(())
+}
+
+async fn suggest_memory(
+    adapter: &Box<dyn ferrochat_providers::ChatProvider>,
+    model: &str,
+    content: &str,
+) -> Option<String> {
+    let prompt = json!({"messages":[
+        {"role":"system","content":"If the conversation contains one durable fact about the user, reply with that fact in one sentence. Otherwise reply NONE."},
+        {"role":"user","content": content.chars().take(1200).collect::<String>()}
+    ]});
+    let mut stream = adapter.chat_stream(model, &prompt).await.ok()?;
+    let mut raw = String::new();
+    while let Some(item) = stream.next().await {
+        if let Ok(chunk) = item {
+            if let Some(text) = chunk.content {
+                raw.push_str(&text);
+            }
+        }
+    }
+    let raw = raw.trim().to_string();
+    if raw.is_empty() || raw.eq_ignore_ascii_case("NONE") || raw.len() > 240 {
+        None
+    } else {
+        Some(raw)
+    }
+}
+
+async fn follow_ups(
+    adapter: &Box<dyn ferrochat_providers::ChatProvider>,
+    model: &str,
+    content: &str,
+) -> Option<Vec<String>> {
+    let prompt = json!({"messages":[
+        {"role":"system","content":"Reply with exactly 3 short follow-up questions the user might ask next. One question per line. No numbering."},
+        {"role":"user","content": content.chars().take(1200).collect::<String>()}
+    ]});
+    let mut stream = adapter.chat_stream(model, &prompt).await.ok()?;
+    let mut raw = String::new();
+    while let Some(item) = stream.next().await {
+        if let Ok(chunk) = item {
+            if let Some(text) = chunk.content {
+                raw.push_str(&text);
+            }
+        }
+    }
+    let questions: Vec<String> = raw
+        .lines()
+        .map(|line| line.trim().trim_start_matches(|c: char| c.is_ascii_digit() || c == '.' || c == '-' || c == ' ').to_string())
+        .map(|line| line.trim().to_string())
+        .filter(|line| !line.is_empty() && line.len() < 160)
+        .take(3)
+        .collect();
+    if questions.is_empty() {
+        None
+    } else {
+        Some(questions)
+    }
+}
+
+fn price_of(form: &Value, key: &str) -> f64 {
+    form.pointer(&format!("/model_item/info/params/{key}"))
+        .or_else(|| form.pointer(&format!("/model_item/params/{key}")))
+        .and_then(|v| v.as_f64())
+        .unwrap_or(0.0)
+}
+
+async fn compress_messages(
+    adapter: &Box<dyn ferrochat_providers::ChatProvider>,
+    model_id: &str,
+    form: &Value,
+    messages: &mut Value,
+) -> Option<(String, i64)> {
+    let limit = form.get("recent_messages").and_then(|v| v.as_i64()).unwrap_or(0);
+    if limit <= 0 {
+        return None;
+    }
+    let Some(arr) = messages.as_array_mut() else {
+        return None;
+    };
+    let system: Vec<Value> = arr
+        .iter()
+        .filter(|m| m.get("role").and_then(|v| v.as_str()) == Some("system"))
+        .cloned()
+        .collect();
+    let mut rest: Vec<Value> = arr
+        .iter()
+        .filter(|m| m.get("role").and_then(|v| v.as_str()) != Some("system"))
+        .cloned()
+        .collect();
+    let covered = form
+        .get("summary_count")
+        .and_then(|v| v.as_i64())
+        .unwrap_or(0)
+        .max(0) as usize;
+    let prior = form
+        .get("summary")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    let dropped_prior = if covered > 0 && covered < rest.len() {
+        rest.drain(..covered);
+        true
+    } else {
+        false
+    };
+    if rest.len() as i64 <= limit {
+        if !prior.is_empty() || dropped_prior {
+            arr.clear();
+            arr.extend(system);
+            if !prior.is_empty() {
+                arr.push(json!({"role": "system", "content": format!("Earlier conversation summary:\n{prior}")}));
+            }
+            arr.extend(rest);
+        }
+        return None;
+    }
+    let drop_count = rest.len() - limit as usize;
+    let dropped: Vec<Value> = rest.drain(..drop_count).collect();
+    let auto = form.get("auto_summary").and_then(|v| v.as_bool()).unwrap_or(true);
+    let fresh = if auto {
+        summarize_dropped(adapter, model_id, &dropped).await
+    } else {
+        None
+    };
+    let fresh = fresh.unwrap_or_else(|| snippet_summary(&dropped));
+    let summary = if prior.is_empty() {
+        fresh
+    } else {
+        format!("{prior}\n{fresh}")
+    };
+    arr.clear();
+    arr.extend(system);
+    arr.push(json!({"role": "system", "content": format!("Earlier conversation summary:\n{summary}")}));
+    arr.extend(rest);
+    Some((summary, (covered + drop_count) as i64))
+}
+
+async fn summarize_dropped(
+    adapter: &Box<dyn ferrochat_providers::ChatProvider>,
+    model_id: &str,
+    dropped: &[Value],
+) -> Option<String> {
+    let text = snippet_summary(dropped);
+    let prompt = json!({"messages":[
+        {"role":"system","content":"Summarize this conversation in one short paragraph. Keep facts, names, and decisions."},
+        {"role":"user","content": text}
+    ]});
+    let mut stream = adapter.chat_stream(model_id, &prompt).await.ok()?;
+    let mut raw = String::new();
+    while let Some(item) = stream.next().await {
+        let chunk = item.ok()?;
+        if let Some(part) = chunk.content {
+            raw.push_str(&part);
+        }
+    }
+    let raw = raw.trim().to_string();
+    if raw.is_empty() { None } else { Some(raw) }
+}
+
+fn snippet_summary(dropped: &[Value]) -> String {
+    let mut note = String::new();
+    for message in dropped.iter().take(12) {
+        let role = message.get("role").and_then(|v| v.as_str()).unwrap_or("");
+        let content = message.get("content").and_then(|v| v.as_str()).unwrap_or("");
+        let snippet: String = content.chars().take(180).collect();
+        note.push_str(&format!("{role}: {snippet}\n"));
+    }
+    note
+}
+
+#[allow(dead_code)]
+fn trim_messages(messages: &mut Value, limit: i64) {
+    if limit <= 0 {
+        return;
+    }
+    let Some(arr) = messages.as_array_mut() else {
+        return;
+    };
+    let system: Vec<Value> = arr
+        .iter()
+        .filter(|m| m.get("role").and_then(|v| v.as_str()) == Some("system"))
+        .cloned()
+        .collect();
+    let rest: Vec<Value> = arr
+        .iter()
+        .filter(|m| m.get("role").and_then(|v| v.as_str()) != Some("system"))
+        .cloned()
+        .collect();
+    if rest.len() as i64 <= limit {
+        return;
+    }
+    let drop_count = rest.len() - limit as usize;
+    let mut note = String::from("Earlier conversation:\n");
+    for message in rest.iter().take(drop_count).take(12) {
+        let role = message.get("role").and_then(|v| v.as_str()).unwrap_or("");
+        let content = message.get("content").and_then(|v| v.as_str()).unwrap_or("");
+        let snippet: String = content.chars().take(180).collect();
+        note.push_str(&format!("{role}: {snippet}\n"));
+    }
+    arr.clear();
+    arr.extend(system);
+    arr.push(json!({"role": "system", "content": note}));
+    arr.extend(rest.into_iter().skip(drop_count));
+}
+
+fn estimate_tokens(messages: &Value) -> i64 {
+    let text = messages.to_string();
+    (text.chars().count() as i64 / 4).max(1)
+}
+
 fn emit(app: &App, form: &Value, data: Value) {
     let sid = form
         .get("session_id")
@@ -310,6 +696,203 @@ fn emit(app: &App, form: &Value, data: Value) {
     if let Some(socket) = app.sockets.lock().unwrap().get(sid) {
         let _ = socket.emit("chat-events", &payload);
     }
+}
+
+async fn prepare_web_search(
+    app: &App,
+    form: &Value,
+    messages: &mut Value,
+    adapter: &Box<dyn ferrochat_providers::ChatProvider>,
+    model_id: &str,
+    provider_id: &str,
+) -> (bool, Vec<Value>) {
+    let cfg = app
+        .db
+        .config_get("web_search")
+        .await
+        .ok()
+        .flatten()
+        .unwrap_or(json!({}));
+    if !ferrochat_search::configured(&cfg) && !cfg["prefer_native"].as_bool().unwrap_or(false) {
+        emit(
+            app,
+            form,
+            json!({"type":"status","data":{"action":"web_search","description":"Web search is not configured","done":true}}),
+        );
+        return (false, Vec::new());
+    }
+    let user_text = last_user_text(messages);
+    let model_web = app
+        .db
+        .provider_model_web(provider_id, model_id)
+        .await
+        .unwrap_or(false);
+    let prefer_native =
+        cfg["prefer_native"].as_bool().unwrap_or(false) || cfg["engine"].as_str() == Some("native");
+    if prefer_native && model_web {
+        emit(
+            app,
+            form,
+            json!({"type":"status","data":{"action":"web_search","description":"Searching with the model","done":true}}),
+        );
+        return (true, Vec::new());
+    }
+    if !ferrochat_search::configured(&cfg) || cfg["engine"].as_str() == Some("native") {
+        emit(
+            app,
+            form,
+            json!({"type":"status","data":{"action":"web_search","description":"This model has no built-in search and no external engine is configured","done":true}}),
+        );
+        return (false, Vec::new());
+    }
+    emit(
+        app,
+        form,
+        json!({"type":"status","data":{"action":"web_search","description":"Searching the web","done":false}}),
+    );
+    let query_text = search_query(adapter, model_id, &user_text).await;
+    let count = cfg.get("count").and_then(|v| v.as_u64()).unwrap_or(5) as usize;
+    let query = Query {
+        engine: cfg
+            .get("engine")
+            .and_then(|v| v.as_str())
+            .unwrap_or("searxng")
+            .to_string(),
+        url: cfg
+            .get("url")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string(),
+        api_key: cfg
+            .get("api_key")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string(),
+        cx: cfg
+            .get("cx")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string(),
+        count,
+        text: query_text,
+    };
+    let mut hits = ferrochat_search::search(&query).await.unwrap_or_default();
+    for url in urls_in(&user_text).into_iter().take(3) {
+        if hits.iter().any(|hit| hit.url == url) {
+            continue;
+        }
+        hits.insert(
+            0,
+            Hit {
+                title: url.clone(),
+                url,
+                snippet: String::new(),
+            },
+        );
+    }
+    let fetch_pages = cfg
+        .get("fetch_content")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(true);
+    if fetch_pages {
+        for hit in hits.iter_mut().take(count) {
+            if let Some(text) = ferrochat_search::fetch_text(&hit.url).await {
+                hit.snippet = text;
+            }
+        }
+    }
+    let urls: Vec<&str> = hits.iter().map(|hit| hit.url.as_str()).collect();
+    emit(
+        app,
+        form,
+        json!({"type":"status","data":{"action":"web_search","description":"Searched {{count}} sites","done":true,"urls": urls}}),
+    );
+    let sources: Vec<Value> = hits
+        .iter()
+        .enumerate()
+        .map(|(idx, hit)| {
+            json!({"name": hit.title, "url": hit.url, "snippet": hit.snippet, "index": idx + 1})
+        })
+        .collect();
+    if !hits.is_empty() {
+        let mut block =
+            String::from("Use the numbered web results below. Cite them as [1], [2].\n");
+        for (idx, hit) in hits.iter().take(count).enumerate() {
+            block.push_str(&format!(
+                "[{}] {} ({})\n{}\n",
+                idx + 1,
+                hit.title,
+                hit.url,
+                hit.snippet.chars().take(1200).collect::<String>()
+            ));
+        }
+        if let Some(arr) = messages.as_array_mut() {
+            arr.insert(0, json!({"role": "system", "content": block}));
+        }
+    }
+    (false, sources)
+}
+
+async fn search_query(
+    adapter: &Box<dyn ferrochat_providers::ChatProvider>,
+    model_id: &str,
+    user_text: &str,
+) -> String {
+    let prompt = json!({
+        "messages": [{
+            "role": "user",
+            "content": format!("Turn this into one short web search query. Output only the query.\n\n{user_text}")
+        }]
+    });
+    let Ok(mut stream) = adapter.chat_stream(model_id, &prompt).await else {
+        return user_text.chars().take(200).collect();
+    };
+    let mut query = String::new();
+    while let Some(item) = stream.next().await {
+        let Ok(chunk) = item else { break };
+        if let Some(text) = chunk.content {
+            query.push_str(&text);
+        }
+        if chunk.done || query.len() > 180 {
+            break;
+        }
+    }
+    let query = query.trim().trim_matches('"').to_string();
+    if query.is_empty() {
+        user_text.chars().take(200).collect()
+    } else {
+        query
+    }
+}
+
+fn last_user_text(messages: &Value) -> String {
+    messages
+        .as_array()
+        .and_then(|items| {
+            items.iter().rev().find_map(|msg| {
+                if msg.get("role").and_then(|v| v.as_str()) == Some("user") {
+                    msg.get("content")
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_string())
+                } else {
+                    None
+                }
+            })
+        })
+        .unwrap_or_default()
+}
+
+fn urls_in(text: &str) -> Vec<String> {
+    text.split_whitespace()
+        .filter_map(|word| {
+            let word = word.trim_matches(|c: char| "()[]<>.,".contains(c));
+            if word.starts_with("http://") || word.starts_with("https://") {
+                Some(word.to_string())
+            } else {
+                None
+            }
+        })
+        .collect()
 }
 
 fn emit_status(app: &App, form: &Value, description: &str) {
@@ -563,6 +1146,9 @@ fn fold_context(
                     }
                 }
             }
+            if file_id(file).is_some() {
+                continue;
+            }
             if let Some(text) = file_text(file, data_dir) {
                 extra.push_str("\n\n");
                 extra.push_str(&text);
@@ -608,9 +1194,76 @@ fn fold_context(
     messages
 }
 
+fn file_id(file: &Value) -> Option<&str> {
+    file.get("id")
+        .or_else(|| file.pointer("/file/id"))
+        .and_then(|v| v.as_str())
+        .filter(|id| !id.is_empty())
+}
+
+async fn attach_document_excerpts(app: &App, form: &Value, messages: &mut Value) {
+    let Some(list) = form.get("files").and_then(|v| v.as_array()) else {
+        return;
+    };
+    let ids: Vec<String> = list.iter().filter_map(|file| file_id(file).map(str::to_string)).collect();
+    if ids.is_empty() {
+        return;
+    }
+    let query = messages
+        .as_array()
+        .and_then(|arr| {
+            arr.iter().rev().find_map(|m| {
+                if m.get("role").and_then(|v| v.as_str()) == Some("user") {
+                    m.get("content").and_then(|v| v.as_str())
+                } else {
+                    None
+                }
+            })
+        })
+        .unwrap_or("");
+    let hits = app.db.search_passages(&ids, query, 6).await.unwrap_or_default();
+    if hits.is_empty() {
+        return;
+    }
+    let mut block = String::from("\n\nDocument excerpts:\n");
+    for (idx, (file_id, filename, page, body)) in hits.iter().enumerate() {
+        let place = if *page > 0 {
+            format!("{filename} p.{page}")
+        } else {
+            filename.clone()
+        };
+        block.push_str(&format!("[{}] {place}\n{body}\n\n", idx + 1));
+        let url = format!("/api/v1/files/{file_id}/content");
+        emit(
+            app,
+            form,
+            json!({
+                "type": "source",
+                "data": {
+                    "source": {"name": place, "url": url},
+                    "document": [body],
+                    "metadata": [{"source": url, "name": place, "page": page}]
+                }
+            }),
+        );
+    }
+    if let Some(arr) = messages.as_array_mut() {
+        if let Some(last) = arr
+            .iter_mut()
+            .rev()
+            .find(|m| m.get("role").and_then(|v| v.as_str()) == Some("user"))
+        {
+            if let Some(content) = last.get_mut("content").and_then(|v| v.as_str()) {
+                last["content"] = json!(format!("{content}{block}"));
+            }
+        }
+    }
+}
+
 fn file_text(file: &Value, data_dir: &std::path::Path) -> Option<String> {
     let inline = file
         .pointer("/file/data/content")
+        .or_else(|| file.pointer("/file/meta/content"))
         .or_else(|| file.get("content"))
         .and_then(|v| v.as_str())
         .map(|s| s.to_string());
@@ -666,5 +1319,70 @@ async fn maybe_tags(
         None
     } else {
         Some(tags)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{compress_messages, trim_messages};
+    use ferrochat_providers::{build, Conn};
+    use serde_json::json;
+
+    #[test]
+    fn keeps_recent_messages_and_summarizes_the_rest() {
+        let mut messages = json!([
+            {"role":"system","content":"Be brief."},
+            {"role":"user","content":"one"},
+            {"role":"assistant","content":"two"},
+            {"role":"user","content":"three"},
+            {"role":"assistant","content":"four"}
+        ]);
+        trim_messages(&mut messages, 2);
+        let roles: Vec<&str> = messages
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|m| m["role"].as_str().unwrap())
+            .collect();
+        assert_eq!(roles, ["system", "system", "user", "assistant"]);
+        assert!(messages[1]["content"]
+            .as_str()
+            .unwrap()
+            .contains("Earlier conversation"));
+        assert!(messages[1]["content"].as_str().unwrap().contains("one"));
+        assert_eq!(messages[2]["content"], "three");
+        assert_eq!(messages[3]["content"], "four");
+    }
+
+    #[tokio::test]
+    async fn reuses_a_stored_summary_for_messages_already_covered() {
+        let adapter = build(Conn {
+            kind: "mock".into(),
+            base_url: String::new(),
+            api_key: String::new(),
+            headers: json!({}),
+            client: reqwest::Client::new(),
+        });
+        let form = json!({
+            "recent_messages": 2,
+            "auto_summary": true,
+            "summary": "old facts",
+            "summary_count": 2
+        });
+        let mut messages = json!([
+            {"role":"user","content":"one"},
+            {"role":"assistant","content":"two"},
+            {"role":"user","content":"three"},
+            {"role":"assistant","content":"four"},
+            {"role":"user","content":"five"}
+        ]);
+        let (summary, count) = compress_messages(&adapter, "mock-model", &form, &mut messages)
+            .await
+            .expect("overflow still needs a summary");
+        assert!(summary.starts_with("old facts"));
+        assert_eq!(count, 3);
+        let text = messages.to_string();
+        assert!(text.contains("Earlier conversation summary"));
+        assert!(text.contains("five"));
     }
 }

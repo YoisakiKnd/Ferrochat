@@ -30,7 +30,7 @@
 	};
 
 	const TYPES = ['openai', 'anthropic', 'gemini', 'ollama', 'azure'];
-	const CAPS = ['vision', 'reasoning', 'tools', 'web', 'embedding'];
+	const CAPS = ['vision', 'reasoning', 'tools', 'web', 'embedding', 'audio'];
 
 	let providers: Provider[] = [];
 	let selected: Provider | null = null;

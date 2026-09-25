@@ -9,6 +9,7 @@
 	const i18n = getContext<import('svelte/store').Writable<import('i18next').i18n>>('i18n');
 
 	import AdvancedParams from './Advanced/AdvancedParams.svelte';
+	import Personalization from './Personalization.svelte';
 	import Textarea from '$lib/components/common/Textarea.svelte';
 
 	export let saveSettings: Function;
@@ -320,6 +321,36 @@
 					rows="4"
 					placeholder={$i18n.t('Enter system prompt here')}
 				/>
+			</div>
+
+			<Personalization {saveSettings} />
+
+			<div class="mt-4 space-y-2">
+				<div class="text-sm font-medium">{$i18n.t('Context')}</div>
+				<label class="flex items-center justify-between text-sm">
+					<span>{$i18n.t('Recent messages')}</span>
+					<input
+						class="w-20 rounded-lg bg-gray-50 dark:bg-gray-900 px-2 py-1 text-sm"
+						type="number"
+						min="0"
+						value={$settings?.recentMessages ?? 0}
+						on:change={(event) => {
+							const value = Number(event.currentTarget.value);
+							saveSettings({ recentMessages: Number.isFinite(value) ? value : 0 });
+						}}
+					/>
+				</label>
+				<label class="flex items-center justify-between text-sm">
+					<span>{$i18n.t('Auto summary')}</span>
+					<input
+						type="checkbox"
+						checked={$settings?.autoSummary ?? true}
+						on:change={(event) => saveSettings({ autoSummary: event.currentTarget.checked })}
+					/>
+				</label>
+			</div>
+			<div class="text-xs text-gray-500">
+				{$i18n.t('0 keeps the whole chat. A positive number keeps that many recent messages and summarizes the rest.')}
 			</div>
 
 			<div class="mt-2 space-y-3 pr-1.5">

@@ -43,6 +43,7 @@
 
 	export let id;
 	export let title;
+	export let snippet = '';
 
 	export let selected = false;
 	export let shiftKey = false;
@@ -294,8 +295,11 @@
 			draggable="false"
 		>
 			<div class=" flex self-center flex-1 w-full">
-				<div dir="auto" class="text-left self-center overflow-hidden w-full h-[20px]">
-					{title}
+				<div class="text-left self-center overflow-hidden w-full">
+					<div dir="auto" class="h-[20px] truncate">{title}</div>
+					{#if snippet}
+						<div class="text-[11px] text-gray-400 truncate">{snippet}</div>
+					{/if}
 				</div>
 			</div>
 		</a>

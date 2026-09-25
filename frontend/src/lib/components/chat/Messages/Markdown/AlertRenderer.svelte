@@ -1,5 +1,6 @@
 <script lang="ts" context="module">
-	import { marked, type Token } from 'marked';
+	import type { Token } from 'marked';
+	import { getMarked } from '$lib/utils/marked';
 
 	type AlertType = 'NOTE' | 'TIP' | 'IMPORTANT' | 'WARNING' | 'CAUTION';
 
@@ -48,7 +49,8 @@
 		const regExp = new RegExp(regExpStr);
 		const matches = token.text?.match(regExp);
 
-		if (matches && matches.length) {
+		const marked = getMarked();
+		if (matches && matches.length && marked) {
 			const alertType = matches[1] as AlertType;
 			const newText = token.text.replace(regExp, '');
 			const newTokens = marked.lexer(newText);

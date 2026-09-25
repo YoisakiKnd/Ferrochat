@@ -23,7 +23,7 @@
 		sort_order: number;
 	};
 
-	const CAPS = ['vision', 'reasoning', 'tools', 'web', 'embedding'];
+	const CAPS = ['vision', 'reasoning', 'tools', 'web', 'embedding', 'audio'];
 	const EFFORTS = ['', 'low', 'medium', 'high'];
 
 	let loaded = false;
@@ -43,7 +43,9 @@
 		top_p: '',
 		max_tokens: '',
 		reasoning_effort: '',
-		system: ''
+		system: '',
+		input_price: '' as string | number,
+		output_price: '' as string | number
 	};
 
 	const authHeaders = () => ({
@@ -138,7 +140,9 @@
 			top_p: p.top_p ?? '',
 			max_tokens: p.max_tokens ?? '',
 			reasoning_effort: p.reasoning_effort ?? '',
-			system: p.system ?? ''
+			system: p.system ?? '',
+			input_price: p.input_price ?? '',
+			output_price: p.output_price ?? ''
 		};
 		showEdit = true;
 	};
@@ -152,6 +156,10 @@
 		}
 		if (form.reasoning_effort) params.reasoning_effort = form.reasoning_effort;
 		if (form.system.trim()) params.system = form.system;
+		for (const key of ['input_price', 'output_price']) {
+			const raw = `${form[key]}`.trim();
+			if (raw !== '') params[key] = Number(raw);
+		}
 		await patch(editing, {
 			name: form.name.trim() || editing.model_id,
 			capabilities: form.capabilities,
@@ -362,6 +370,14 @@
 						<option value={effort}>{effort || $i18n.t('Default')}</option>
 					{/each}
 				</select>
+			</label>
+			<label class="block text-xs text-gray-500"
+				>{$i18n.t('Input price')}
+				<input class="w-full mt-1 rounded-lg px-3 py-2 text-sm bg-gray-50 dark:bg-gray-900" type="number" min="0" step="0.01" bind:value={form.input_price} />
+			</label>
+			<label class="block text-xs text-gray-500"
+				>{$i18n.t('Output price')}
+				<input class="w-full mt-1 rounded-lg px-3 py-2 text-sm bg-gray-50 dark:bg-gray-900" type="number" min="0" step="0.01" bind:value={form.output_price} />
 			</label>
 			<label class="block text-xs text-gray-500"
 				>{$i18n.t('System Prompt')}

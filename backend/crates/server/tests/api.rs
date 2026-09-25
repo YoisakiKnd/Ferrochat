@@ -324,3 +324,197 @@ fn openai_compatible_stream_receives_image_part() {
         res.text().unwrap_or_default()
     );
 }
+
+#[test]
+fn mock_usage_search_and_no_builtin_presets() {
+    let server = spawn();
+    let token = signup(&server.base);
+    let client = reqwest::blocking::Client::new();
+    client
+        .post(format!("{}/api/v1/providers", server.base))
+        .bearer_auth(&token)
+        .json(&serde_json::json!({"id":"mock","type":"mock","name":"Mock","base_url":"","api_keys":"","enabled":true}))
+        .send()
+        .unwrap()
+        .error_for_status()
+        .unwrap();
+    client
+        .post(format!("{}/api/v1/providers/mock/models", server.base))
+        .bearer_auth(&token)
+        .json(&serde_json::json!({"model_id":"mock-model","name":"Mock"}))
+        .send()
+        .unwrap()
+        .error_for_status()
+        .unwrap();
+    let started = client
+        .post(format!("{}/api/chat/completions", server.base))
+        .bearer_auth(&token)
+        .json(&serde_json::json!({
+            "stream": true,
+            "chat_id": "usage-probe",
+            "model": "mock:mock-model",
+            "messages": [{"role":"user","content":"hello uniquephrasezeta"}]
+        }))
+        .send()
+        .unwrap();
+    assert!(started.status().is_success());
+    thread::sleep(Duration::from_millis(500));
+    let usage = client
+        .get(format!("{}/api/v1/usage", server.base))
+        .bearer_auth(&token)
+        .send()
+        .unwrap()
+        .json::<serde_json::Value>()
+        .unwrap();
+    assert!(usage
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|row| row["model"] == "mock:mock-model" && row["completion_tokens"].as_i64().unwrap_or(0) > 0));
+
+    let chat = client
+        .post(format!("{}/api/v1/chats/new", server.base))
+        .bearer_auth(&token)
+        .json(&serde_json::json!({"chat":{"title":"notes","history":{"messages":{"a":{"role":"user","content":"uniquephrasezeta"}}}}}))
+        .send()
+        .unwrap()
+        .json::<serde_json::Value>()
+        .unwrap();
+    let found = client
+        .get(format!("{}/api/v1/chats/search?text=uniquephrasezeta", server.base))
+        .bearer_auth(&token)
+        .send()
+        .unwrap()
+        .json::<serde_json::Value>()
+        .unwrap();
+    assert!(found.as_array().unwrap().iter().any(|row| row["id"] == chat["id"]));
+
+    let models = client
+        .get(format!("{}/api/models", server.base))
+        .bearer_auth(&token)
+        .send()
+        .unwrap()
+        .json::<serde_json::Value>()
+        .unwrap();
+    let names = models["data"].to_string();
+    assert!(!names.contains("preset-translate"));
+    assert!(found.as_array().unwrap().iter().any(|row| row["snippet"]
+        .as_str()
+        .unwrap_or("")
+        .contains("uniquephrasezeta")
+        || row["title"].as_str().unwrap_or("").contains("notes")));
+}
+
+#[test]
+fn tool_stream_prices_import_and_memory() {
+    let server = spawn();
+    let token = signup(&server.base);
+    let client = reqwest::blocking::Client::new();
+    client
+        .post(format!("{}/api/v1/providers", server.base))
+        .bearer_auth(&token)
+        .json(&serde_json::json!({"id":"mock","type":"mock","name":"Mock","base_url":"","api_keys":"","enabled":true}))
+        .send()
+        .unwrap()
+        .error_for_status()
+        .unwrap();
+    client
+        .post(format!("{}/api/v1/providers/mock/models", server.base))
+        .bearer_auth(&token)
+        .json(&serde_json::json!({"model_id":"mock-model","name":"Mock"}))
+        .send()
+        .unwrap()
+        .error_for_status()
+        .unwrap();
+    client
+        .post(format!(
+            "{}/api/v1/providers/mock/models/mock-model",
+            server.base
+        ))
+        .bearer_auth(&token)
+        .json(&serde_json::json!({"params":{"input_price":2.0,"output_price":4.0}}))
+        .send()
+        .unwrap()
+        .error_for_status()
+        .unwrap();
+
+    let tool = client
+        .post(format!("{}/api/chat/completions", server.base))
+        .bearer_auth(&token)
+        .json(&serde_json::json!({
+            "stream": true,
+            "model": "mock:mock-model",
+            "messages": [{"role":"user","content":"translate this"}],
+            "features": {"web_search": true}
+        }))
+        .send()
+        .unwrap();
+    assert!(tool.status().is_success(), "{}", tool.status());
+    let body = tool.text().unwrap();
+    assert!(body.contains("Hello"), "{body}");
+    assert!(body.contains("[DONE]"), "{body}");
+
+    let started = client
+        .post(format!("{}/api/chat/completions", server.base))
+        .bearer_auth(&token)
+        .json(&serde_json::json!({
+            "stream": true,
+            "chat_id": "price-probe",
+            "model": "mock:mock-model",
+            "messages": [{"role":"user","content":"price me"}]
+        }))
+        .send()
+        .unwrap();
+    assert!(started.status().is_success());
+    thread::sleep(Duration::from_millis(500));
+    let usage = client
+        .get(format!("{}/api/v1/usage", server.base))
+        .bearer_auth(&token)
+        .send()
+        .unwrap()
+        .json::<serde_json::Value>()
+        .unwrap();
+    assert!(usage.as_array().unwrap().iter().any(|row| {
+        row["model"] == "mock:mock-model" && row["cost"].as_f64().unwrap_or(0.0) > 0.0
+    }));
+
+    let imported = client
+        .post(format!("{}/api/v1/chats/import", server.base))
+        .bearer_auth(&token)
+        .json(&serde_json::json!({"chat":{"title":"imported note","history":{"messages":{"a":{"role":"user","content":"brought in"}}}}}))
+        .send()
+        .unwrap()
+        .error_for_status()
+        .unwrap()
+        .json::<serde_json::Value>()
+        .unwrap();
+    let loaded = client
+        .get(format!(
+            "{}/api/v1/chats/{}",
+            server.base,
+            imported["id"].as_str().unwrap()
+        ))
+        .bearer_auth(&token)
+        .send()
+        .unwrap()
+        .json::<serde_json::Value>()
+        .unwrap();
+    assert_eq!(loaded["chat"]["title"], "imported note");
+
+    client
+        .post(format!("{}/api/v1/memories/add", server.base))
+        .bearer_auth(&token)
+        .json(&serde_json::json!({"content":"Ada likes rust"}))
+        .send()
+        .unwrap()
+        .error_for_status()
+        .unwrap();
+    let memories = client
+        .get(format!("{}/api/v1/memories/", server.base))
+        .bearer_auth(&token)
+        .send()
+        .unwrap()
+        .text()
+        .unwrap();
+    assert!(memories.contains("Ada likes rust"), "{memories}");
+}

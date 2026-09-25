@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { WEBUI_BASE_URL } from '$lib/constants';
-	import ImagePreview from './ImagePreview.svelte';
+	let ImagePreview = null;
 
 	export let src = '';
 	export let alt = '';
@@ -16,7 +16,10 @@
 
 <button
 	class={className}
-	on:click={() => {
+	on:click={async () => {
+		if (!ImagePreview) {
+			ImagePreview = (await import('./ImagePreview.svelte')).default;
+		}
 		showImagePreview = true;
 	}}
 	type="button"
@@ -24,4 +27,6 @@
 	<img src={_src} {alt} class={imageClassName} draggable="false" data-cy="image" />
 </button>
 
-<ImagePreview bind:show={showImagePreview} src={_src} {alt} />
+{#if ImagePreview}
+	<svelte:component this={ImagePreview} bind:show={showImagePreview} src={_src} {alt} />
+{/if}

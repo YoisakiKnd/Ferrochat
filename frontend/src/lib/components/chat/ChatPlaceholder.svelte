@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { WEBUI_BASE_URL } from '$lib/constants';
-	import { marked } from 'marked';
+	import { ensureMarked } from '$lib/utils/marked';
 
 	import { config, user, models as _models, temporaryChatEnabled } from '$lib/stores';
 	import { onMount, getContext } from 'svelte';
@@ -22,6 +22,22 @@
 
 	let mounted = false;
 	let selectedModelIdx = 0;
+	let modelDescriptionHtml = '';
+
+	$: {
+		const description = models[selectedModelIdx]?.info?.meta?.description ?? '';
+		if (!description) {
+			modelDescriptionHtml = '';
+		} else {
+			const plain = sanitizeResponseContent(description);
+			modelDescriptionHtml = plain;
+			ensureMarked().then((marked) => {
+				if ((models[selectedModelIdx]?.info?.meta?.description ?? '') === description) {
+					modelDescriptionHtml = marked.parse(plain);
+				}
+			});
+		}
+	}
 
 	$: if (modelIds.length > 0) {
 		selectedModelIdx = models.length - 1;
@@ -45,9 +61,7 @@
 						}}
 					>
 						<Tooltip
-							content={marked.parse(
-								sanitizeResponseContent(models[selectedModelIdx]?.info?.meta?.description ?? '')
-							)}
+							content={modelDescriptionHtml}
 							placement="right"
 						>
 							<img
@@ -95,9 +109,7 @@
 						<div
 							class="mt-0.5 text-base font-normal text-gray-500 dark:text-gray-400 line-clamp-3 markdown"
 						>
-							{@html marked.parse(
-								sanitizeResponseContent(models[selectedModelIdx]?.info?.meta?.description)
-							)}
+							{@html modelDescriptionHtml}
 						</div>
 						{#if models[selectedModelIdx]?.info?.meta?.user}
 							<div class="mt-0.5 text-sm font-normal text-gray-400 dark:text-gray-500">

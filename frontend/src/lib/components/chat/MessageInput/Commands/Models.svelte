@@ -1,5 +1,5 @@
 <script lang="ts">
-	import Fuse from 'fuse.js';
+	let FuseCtor: typeof import('fuse.js').default | null = null;
 
 	import { createEventDispatcher, onMount } from 'svelte';
 	import { tick, getContext } from 'svelte';
@@ -15,29 +15,30 @@
 	let selectedIdx = 0;
 	let filteredItems = [];
 
-	let fuse = new Fuse(
-		$models
-			.filter((model) => !model?.info?.meta?.hidden)
-			.map((model) => {
-				const _item = {
+	let fuse = null;
+
+	onMount(async () => {
+		FuseCtor = (await import('fuse.js')).default;
+		fuse = new FuseCtor(
+			$models
+				.filter((model) => !model?.info?.meta?.hidden)
+				.map((model) => ({
 					...model,
 					modelName: model?.name,
 					tags: model?.info?.meta?.tags?.map((tag) => tag.name).join(' '),
 					desc: model?.info?.meta?.description
-				};
-				return _item;
-			}),
-		{
-			keys: ['value', 'tags', 'modelName'],
-			threshold: 0.3
-		}
-	);
+				})),
+			{
+				keys: ['value', 'tags', 'modelName'],
+				threshold: 0.3
+			}
+		);
+	});
 
-	$: filteredItems = command.slice(1)
-		? fuse.search(command).map((e) => {
-				return e.item;
-			})
-		: $models.filter((model) => !model?.info?.meta?.hidden);
+	$: filteredItems =
+		command.slice(1) && fuse
+			? fuse.search(command).map((e) => e.item)
+			: $models.filter((model) => !model?.info?.meta?.hidden);
 
 	$: if (command) {
 		selectedIdx = 0;

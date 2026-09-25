@@ -1,5 +1,5 @@
 <script lang="ts">
-	import Fuse from 'fuse.js';
+	let FuseCtor: typeof import('fuse.js').default | null = null;
 	import Bolt from '$lib/components/icons/Bolt.svelte';
 	import { onMount, getContext, createEventDispatcher } from 'svelte';
 	import { WEBUI_NAME } from '$lib/stores';
@@ -22,8 +22,12 @@
 	let fuse;
 	let filteredPrompts = [];
 
-	// Initialize Fuse
-	$: fuse = new Fuse(sortedPrompts, fuseOptions);
+	const ensureFuse = async () => {
+		if (!FuseCtor) FuseCtor = (await import('fuse.js')).default;
+		fuse = new FuseCtor(sortedPrompts, fuseOptions);
+	};
+
+	$: if (inputValue.trim()) ensureFuse();
 
 	// Update the filteredPrompts if inputValue changes
 	// Only increase version if something wirklich geändert hat

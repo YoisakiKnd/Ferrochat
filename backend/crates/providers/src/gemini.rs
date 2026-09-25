@@ -65,6 +65,26 @@ impl ChatProvider for Gemini {
                     continue;
                 }
                 let v: Value = serde_json::from_str(data).unwrap_or(json!({}));
+                if let Some(prompt) = v.pointer("/usageMetadata/promptTokenCount").and_then(|n| n.as_i64()) {
+                    out.prompt_tokens = Some(prompt);
+                }
+                if let Some(completion) = v.pointer("/usageMetadata/candidatesTokenCount").and_then(|n| n.as_i64()) {
+                    out.completion_tokens = Some(completion);
+                }
+                if let Some(chunks) = v
+                    .pointer("/candidates/0/groundingMetadata/groundingChunks")
+                    .and_then(|p| p.as_array())
+                {
+                    for item in chunks {
+                        if let Some(url) = item.pointer("/web/uri").and_then(|u| u.as_str()) {
+                            let title = item
+                                .pointer("/web/title")
+                                .and_then(|t| t.as_str())
+                                .unwrap_or(url);
+                            out.citations.push((title.to_string(), url.to_string()));
+                        }
+                    }
+                }
                 if let Some(parts) = v
                     .pointer("/candidates/0/content/parts")
                     .and_then(|p| p.as_array())
@@ -126,6 +146,13 @@ fn to_gemini(incoming: &Value) -> Value {
     let mut body = json!({ "contents": contents });
     if !system.is_empty() {
         body["systemInstruction"] = json!({ "parts": [{ "text": system }] });
+    }
+    if incoming
+        .get("native_search")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false)
+    {
+        body["tools"] = json!([{ "google_search": {} }]);
     }
     body
 }

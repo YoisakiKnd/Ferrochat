@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { DropdownMenu } from 'bits-ui';
-	import { marked } from 'marked';
-	import Fuse from 'fuse.js';
+	import { ensureMarked } from '$lib/utils/marked';
+	let FuseCtor: typeof import('fuse.js').default | null = null;
 
 	import { flyAndScale } from '$lib/utils/transitions';
 	import { createEventDispatcher, onMount, getContext, tick } from 'svelte';
@@ -68,24 +68,42 @@
 	let ollamaVersion = null;
 	let selectedModelIdx = 0;
 
-	const fuse = new Fuse(
-		items.map((item) => {
-			const _item = {
-				...item,
-				modelName: item.model?.name,
-				tags: (item.model?.tags ?? []).map((tag) => tag.name).join(' '),
-				desc: item.model?.info?.meta?.description
-			};
-			return _item;
-		}),
-		{
-			keys: ['value', 'tags', 'modelName'],
-			threshold: 0.4
-		}
-	);
+	let fuse = null;
+	const descriptions: Record<string, string> = {};
+	let descriptionVersion = 0;
+	const modelDescription = (text: string) => {
+		if (descriptions[text] !== undefined) return descriptions[text];
+		const plain = sanitizeResponseContent(text).replaceAll('\n', '<br>');
+		descriptions[text] = plain;
+		ensureMarked().then((marked) => {
+			descriptions[text] = marked.parse(plain);
+			descriptionVersion += 1;
+		});
+		return descriptions[text];
+	};
+	const buildFuse = async () => {
+		if (!FuseCtor) FuseCtor = (await import('fuse.js')).default;
+		fuse = new FuseCtor(
+			items.map((item) => {
+				const _item = {
+					...item,
+					modelName: item.model?.name,
+					tags: (item.model?.tags ?? []).map((tag) => tag.name).join(' '),
+					desc: item.model?.info?.meta?.description
+				};
+				return _item;
+			}),
+			{
+				keys: ['value', 'tags', 'modelName'],
+				threshold: 0.4
+			}
+		);
+	};
+
+	$: if (searchValue) buildFuse();
 
 	$: filteredItems = (
-		searchValue
+		searchValue && fuse
 			? fuse
 					.search(searchValue)
 					.map((e) => {
@@ -586,12 +604,9 @@
 
 								{#if item.model?.info?.meta?.description}
 									<Tooltip
-										content={`${marked.parse(
-											sanitizeResponseContent(item.model?.info?.meta?.description).replaceAll(
-												'\n',
-												'<br>'
-											)
-										)}`}
+										content={descriptionVersion >= 0
+											? modelDescription(item.model?.info?.meta?.description ?? '')
+											: ''}
 									>
 										<div class=" translate-y-[1px]">
 											<svg

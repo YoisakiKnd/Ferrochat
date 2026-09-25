@@ -6,8 +6,6 @@
 	import fileSaver from 'file-saver';
 	const { saveAs } = fileSaver;
 
-	import jsPDF from 'jspdf';
-	import html2canvas from 'html2canvas-pro';
 
 	const dispatch = createEventDispatcher();
 
@@ -78,7 +76,21 @@
 		saveAs(blob, `chat-${chat.chat.title}.txt`);
 	};
 
+	const downloadMarkdown = async () => {
+		const chat = await getChatById(localStorage.token, chatId);
+		if (!chat) return;
+		const chatText = await getChatAsText(chat);
+		const blob = new Blob([`# ${chat.chat?.title ?? 'Chat'}\n\n${chatText}`], {
+			type: 'text/markdown'
+		});
+		saveAs(blob, `chat-${chat.chat?.title ?? 'chat'}.md`);
+	};
+
 	const downloadPdf = async () => {
+		const [{ default: html2canvas }, { default: jsPDF }] = await Promise.all([
+			import('html2canvas-pro'),
+			import('jspdf')
+		]);
 		const chat = await getChatById(localStorage.token, chatId);
 
 		const containerElement = document.getElementById('messages-container');
@@ -271,6 +283,14 @@
 						}}
 					>
 						<div class="flex items-center line-clamp-1">{$i18n.t('Plain text (.txt)')}</div>
+					</DropdownMenu.Item>
+					<DropdownMenu.Item
+						class="flex gap-2 items-center px-3 py-2 text-sm  cursor-pointer hover:bg-gray-50 dark:hover:bg-gray-800 rounded-md"
+						on:click={() => {
+							downloadMarkdown();
+						}}
+					>
+						<div class="flex items-center line-clamp-1">{$i18n.t('Markdown (.md)')}</div>
 					</DropdownMenu.Item>
 
 					<DropdownMenu.Item

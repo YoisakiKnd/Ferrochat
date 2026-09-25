@@ -17,6 +17,7 @@ ferrochat-core.workspace = true
 ferrochat-db.workspace = true
 ferrochat-mcp.workspace = true
 ferrochat-providers.workspace = true
+ferrochat-search.workspace = true
 futures.workspace = true
 jsonwebtoken.workspace = true
 mime_guess.workspace = true
@@ -31,6 +32,9 @@ tower-http.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 uuid.workspace = true
+zip = "2"
+pdf-extract = "0.7"
+calamine = "0.26"
 
 [dev-dependencies]
 reqwest = { version = "0.12", default-features = false, features = ["json", "blocking", "rustls-tls"] }

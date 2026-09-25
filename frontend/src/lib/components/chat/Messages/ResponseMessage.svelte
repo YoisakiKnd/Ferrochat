@@ -14,8 +14,9 @@
 	import { createNewFeedback, getFeedbackById, updateFeedbackById } from '$lib/apis/evaluations';
 	import { getChatById } from '$lib/apis/chats';
 	import { generateTags } from '$lib/apis';
+	import { addNewMemory } from '$lib/apis/memories';
 
-	import { config, models, settings, temporaryChatEnabled, TTSWorker, user } from '$lib/stores';
+	import { config, models, settings, temporaryChatEnabled, user } from '$lib/stores';
 	import { synthesizeOpenAISpeech } from '$lib/apis/audio';
 	import { imageGenerations } from '$lib/apis/images';
 	import {
@@ -46,7 +47,6 @@
 	import Citations from './Citations.svelte';
 	import CodeExecutions from './CodeExecutions.svelte';
 	import ContentRenderer from './ContentRenderer.svelte';
-	import { KokoroWorker } from '$lib/workers/KokoroWorker';
 	import FileItem from '$lib/components/common/FileItem.svelte';
 
 	interface MessageType {
@@ -98,16 +98,37 @@
 			usage?: unknown;
 		};
 		annotation?: { type: string; rating: number };
+		followUps?: string[];
+		memorySuggestion?: string;
+		selectedModelId?: string;
+		parentId?: string;
+		arena?: boolean;
+		feedbackId?: string;
+		citations?: boolean;
+		usage?: {
+			prompt_tokens?: number;
+			completion_tokens?: number;
+			cost?: number;
+			estimated?: boolean;
+		};
 	}
 
 	export let chatId = '';
-	export let history;
+	export let history: { messages: Record<string, any>; currentId?: string | null };
 	export let messageId;
 
-	let message: MessageType = JSON.parse(JSON.stringify(history.messages[messageId]));
-	$: if (history.messages) {
-		if (JSON.stringify(message) !== JSON.stringify(history.messages[messageId])) {
-			message = JSON.parse(JSON.stringify(history.messages[messageId]));
+	let edit = false;
+	let message: MessageType = { ...history.messages[messageId] };
+	$: if (!edit && history.messages?.[messageId]) {
+		const next = history.messages[messageId];
+		if (
+			message?.content !== next.content ||
+			message?.done !== next.done ||
+			message?.followUps !== next.followUps ||
+			message?.memorySuggestion !== next.memorySuggestion ||
+			message?.error !== next.error
+		) {
+			message = { ...next };
 		}
 	}
 
@@ -139,7 +160,6 @@
 	let model = null;
 	$: model = $models.find((m) => m.id === message.model);
 
-	let edit = false;
 	let editedContent = '';
 	let editTextAreaElement: HTMLTextAreaElement;
 
@@ -153,6 +173,7 @@
 	let generatingImage = false;
 
 	let showRateComment = false;
+	let showOtherModels = false;
 
 	const copyToClipboard = async (text) => {
 		text = removeAllDetails(text);
@@ -272,39 +293,12 @@
 
 			let lastPlayedAudioPromise = Promise.resolve(); // Initialize a promise that resolves immediately
 
-			if ($settings.audio?.tts?.engine === 'browser-kokoro') {
-				if (!$TTSWorker) {
-					await TTSWorker.set(
-						new KokoroWorker({
-							dtype: $settings.audio?.tts?.engineConfig?.dtype ?? 'fp32'
-						})
-					);
-
-					await $TTSWorker.init();
-				}
-
-				for (const [idx, sentence] of messageContentParts.entries()) {
-					const blob = await $TTSWorker
-						.generate({
-							text: sentence,
-							voice: $settings?.audio?.tts?.voice ?? $config?.audio?.tts?.voice
-						})
-						.catch((error) => {
-							console.error(error);
-							toast.error(`${error}`);
-
-							speaking = false;
-							loadingSpeech = false;
-						});
-
-					if (blob) {
-						const audio = new Audio(blob);
-						audio.playbackRate = $settings.audio?.tts?.playbackRate ?? 1;
-
-						audioParts[idx] = audio;
-						loadingSpeech = false;
-						lastPlayedAudioPromise = lastPlayedAudioPromise.then(() => playAudio(idx));
-					}
+			if ($settings.audio?.tts?.engine === 'browser-kokoro' || $settings.audio?.tts?.engine === 'browser') {
+				loadingSpeech = false;
+				for (const sentence of messageContentParts) {
+					const utter = new SpeechSynthesisUtterance(sentence);
+					utter.rate = $settings.audio?.tts?.playbackRate ?? 1;
+					window.speechSynthesis.speak(utter);
 				}
 			} else {
 				for (const [idx, sentence] of messageContentParts.entries()) {
@@ -856,6 +850,37 @@
 									<Citations id={message?.id} sources={message?.sources ?? message?.citations} />
 								{/if}
 
+								{#if message.memorySuggestion}
+									<button
+										class="mt-2 px-2.5 py-1 text-xs rounded-full bg-gray-50 dark:bg-gray-850"
+										type="button"
+										on:click={async () => {
+											await addNewMemory(localStorage.token, message.memorySuggestion);
+											message.memorySuggestion = '';
+											toast.success($i18n.t('Saved'));
+										}}
+									>
+										{$i18n.t('Remember this?')} {message.memorySuggestion}
+									</button>
+								{/if}
+
+								{#if message.followUps?.length}
+									<div class="mt-2 flex flex-wrap gap-2">
+										{#each message.followUps as follow}
+											<button
+												class="px-2.5 py-1 text-xs rounded-full bg-gray-50 dark:bg-gray-850 hover:bg-gray-100 dark:hover:bg-gray-800"
+												type="button"
+												on:click={() =>
+													window.dispatchEvent(
+														new CustomEvent('ferrochat:prompt', { detail: follow })
+													)}
+											>
+												{follow}
+											</button>
+										{/each}
+									</div>
+								{/if}
+
 								{#if message.code_executions}
 									<CodeExecutions codeExecutions={message.code_executions} />
 								{/if}
@@ -1165,6 +1190,16 @@
 								{/if}
 
 								{#if message.usage}
+									<div class="self-center px-1 text-[11px] text-gray-400 whitespace-nowrap">
+										{message.usage.prompt_tokens ?? 0}+{message.usage.completion_tokens ?? 0}
+										{$i18n.t('tokens')}
+										{#if Number(message.usage.cost) > 0}
+											· ${Number(message.usage.cost).toFixed(4)}
+										{/if}
+										{#if message.usage.estimated}
+											· {$i18n.t('Estimated')}
+										{/if}
+									</div>
 									<Tooltip
 										content={message.usage
 											? `<pre>${sanitizeResponseContent(
@@ -1355,6 +1390,41 @@
 											</svg>
 										</button>
 									</Tooltip>
+
+									{#if isLastMessage && $models.length > 1}
+										<div class="relative">
+											<Tooltip content={$i18n.t('Another model')} placement="bottom">
+												<button
+													type="button"
+													aria-label={$i18n.t('Another model')}
+													class="{isLastMessage
+														? 'visible'
+														: 'invisible group-hover:visible'} p-1.5 hover:bg-black/5 dark:hover:bg-white/5 rounded-lg dark:hover:text-white hover:text-black transition"
+													on:click={() => (showOtherModels = !showOtherModels)}
+												>
+													<svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2.3" stroke="currentColor" class="w-4 h-4">
+														<path stroke-linecap="round" stroke-linejoin="round" d="M7.5 21 3 16.5m0 0L7.5 12M3 16.5h13.5m0-13.5L21 7.5m0 0L16.5 12M21 7.5H7.5" />
+													</svg>
+												</button>
+											</Tooltip>
+											{#if showOtherModels}
+												<div class="absolute bottom-8 left-0 z-50 w-56 max-h-64 overflow-auto rounded-xl border border-gray-100 dark:border-gray-800 bg-white dark:bg-gray-900 shadow-lg p-1">
+													{#each $models as item}
+														<button
+															type="button"
+															class="w-full text-left px-2 py-1.5 text-sm rounded-lg hover:bg-gray-50 dark:hover:bg-gray-850"
+															on:click={() => {
+																showOtherModels = false;
+																regenerateResponse(message, item.id);
+															}}
+														>
+															{item.name ?? item.id}
+														</button>
+													{/each}
+												</div>
+											{/if}
+										</div>
+									{/if}
 
 									{#if siblings.length > 1}
 										<Tooltip content={$i18n.t('Delete')} placement="bottom">

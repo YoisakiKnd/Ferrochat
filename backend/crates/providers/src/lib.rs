@@ -27,6 +27,9 @@ pub struct ChatChunk {
     pub tool_calls: Vec<ToolCallDelta>,
     pub done: bool,
     pub error: Option<String>,
+    pub citations: Vec<(String, String)>,
+    pub prompt_tokens: Option<i64>,
+    pub completion_tokens: Option<i64>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -138,6 +141,7 @@ pub fn openai_body(model: &str, incoming: &Value) -> Value {
         "model": model,
         "messages": incoming.get("messages").cloned().unwrap_or(json!([])),
         "stream": true,
+        "stream_options": {"include_usage": true},
     });
     if let Some(params) = incoming.get("params").and_then(|v| v.as_object()) {
         for key in [
@@ -156,6 +160,34 @@ pub fn openai_body(model: &str, incoming: &Value) -> Value {
     }
     if let Some(tools) = incoming.get("tools") {
         body["tools"] = tools.clone();
+    }
+    if incoming
+        .get("native_search")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false)
+    {
+        let provider = incoming
+            .get("provider_id")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        match provider {
+            "openrouter" => {
+                let model = body["model"].as_str().unwrap_or(model);
+                if !model.ends_with(":online") {
+                    body["model"] = json!(format!("{model}:online"));
+                }
+            }
+            "dashscope" => body["enable_search"] = json!(true),
+            "zhipu" => {
+                body["tools"] = json!([{
+                    "type": "web_search",
+                    "web_search": { "enable": true }
+                }]);
+            }
+            _ => {
+                body["web_search_options"] = json!({"search_context_size": "medium"});
+            }
+        }
     }
     body
 }

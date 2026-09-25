@@ -2,7 +2,6 @@
 	import { toast } from 'svelte-sonner';
 
 	import DOMPurify from 'dompurify';
-	import { marked } from 'marked';
 
 	import { getContext, tick } from 'svelte';
 	const i18n = getContext<import('svelte/store').Writable<import('i18next').i18n>>('i18n');
@@ -259,6 +258,22 @@
 					<LightBlub className="size-3 shrink-0" />
 
 					<div class="shrink-0">{$i18n.t('Explain')}</div>
+				</button>
+				<button
+					class="px-1 hover:bg-gray-50 dark:hover:bg-gray-800 rounded-sm flex items-center gap-1 min-w-fit"
+					on:mousedown={(event) => {
+						event.preventDefault();
+						selectedText = window.getSelection()?.toString() ?? '';
+					}}
+					on:click={() => {
+						const text = (selectedText || window.getSelection()?.toString() || '').trim();
+						if (!text) return;
+						window.dispatchEvent(
+							new CustomEvent('ferrochat:prompt', { detail: `> ${text}\n\n` })
+						);
+					}}
+				>
+					<div class="shrink-0">{$i18n.t('Quote')}</div>
 				</button>
 			</div>
 		{:else}

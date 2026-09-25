@@ -3,7 +3,7 @@
 	import { onMount, createEventDispatcher } from 'svelte';
 	import { fade } from 'svelte/transition';
 	import DOMPurify from 'dompurify';
-	import { marked } from 'marked';
+	import { ensureMarked } from '$lib/utils/marked';
 
 	const dispatch = createEventDispatcher();
 
@@ -21,6 +21,17 @@
 	export let dismissed = false;
 
 	let mounted = false;
+	let bannerHtml = '';
+
+	$: if (banner?.content) {
+		const content = banner.content;
+		bannerHtml = DOMPurify.sanitize(content);
+		ensureMarked().then((marked) => {
+			if (banner.content === content) {
+				bannerHtml = marked.parse(bannerHtml);
+			}
+		});
+	}
 
 	const classNames: Record<string, string> = {
 		info: 'bg-blue-500/20 text-blue-700 dark:text-blue-200 ',
@@ -84,7 +95,7 @@
 				</div>
 
 				<div class="flex-1 text-xs text-gray-700 dark:text-white">
-					{@html marked.parse(DOMPurify.sanitize(banner.content))}
+					{@html bannerHtml}
 				</div>
 			</div>
 

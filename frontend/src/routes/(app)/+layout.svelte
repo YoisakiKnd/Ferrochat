@@ -4,7 +4,6 @@
 	import { openDB, deleteDB } from 'idb';
 	import fileSaver from 'file-saver';
 	const { saveAs } = fileSaver;
-	import mermaid from 'mermaid';
 
 	import { goto } from '$app/navigation';
 	import { page } from '$app/stores';
@@ -109,6 +108,15 @@
 				const isCtrlPressed = event.ctrlKey || event.metaKey; // metaKey is for Cmd key on Mac
 				// Check if the Shift key is pressed
 				const isShiftPressed = event.shiftKey;
+
+				if (isCtrlPressed && event.key.toLowerCase() === 'k') {
+					event.preventDefault();
+					document.getElementById('sidebar-search-input')?.focus();
+				}
+
+				if (event.key === 'Escape' && !isCtrlPressed && !isShiftPressed) {
+					document.getElementById('stop-response-button')?.click();
+				}
 
 				// Check if Ctrl + Shift + O is pressed
 				if (isCtrlPressed && isShiftPressed && event.key.toLowerCase() === 'o') {

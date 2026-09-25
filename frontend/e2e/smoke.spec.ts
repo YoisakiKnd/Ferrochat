@@ -77,3 +77,67 @@ test('signup, provider model picking, models admin, and chat', async ({ page }) 
 	await expect(page.getByText('2/2').first()).toBeVisible();
 	await expect(page.getByText('Hello t=0.3').last()).toBeVisible({ timeout: 20000 });
 });
+
+test('plain textarea can send before rich text loads', async ({ page }) => {
+	await page.addInitScript(() => {
+		window.requestIdleCallback = () => 0;
+	});
+	await page.goto('/auth');
+	const start = page.getByRole('button', { name: /get started|开始使用/i });
+	if (await start.count()) {
+		await start.click();
+		await page.getByPlaceholder(/email|邮箱/i).fill('ada@example.com');
+		await page.getByPlaceholder(/password|密码/i).fill('secret1');
+		const name = page.getByPlaceholder(/name|名称/i);
+		if (await name.count()) await name.fill('Ada');
+		await page.getByRole('button', { name: /create admin account|创建管理员账[号户]/i }).click();
+	} else {
+		await page.getByPlaceholder(/email|邮箱/i).fill('ada@example.com');
+		await page.getByPlaceholder(/password|密码/i).fill('secret1');
+		await page.getByRole('button', { name: /sign in|登录/i }).click();
+	}
+	const input = page.locator('#chat-input');
+	await expect(input).toBeVisible();
+	await expect.poll(async () => input.evaluate((el) => el.tagName)).toBe('TEXTAREA');
+	await input.fill('hi');
+	await input.press('Enter');
+	await expect(page.getByText(/Hello/)).toBeVisible({ timeout: 20000 });
+});
+
+test('tools page, shortcuts, and a phone-width layout', async ({ page }) => {
+	await page.goto('/auth');
+	const start = page.getByRole('button', { name: /get started|开始使用/i });
+	if (await start.count()) {
+		await start.click();
+		await page.getByPlaceholder(/email|邮箱/i).fill('bea@example.com');
+		await page.getByPlaceholder(/password|密码/i).fill('secret1');
+		const name = page.getByPlaceholder(/name|名称/i);
+		if (await name.count()) await name.fill('Bea');
+		await page.getByRole('button', { name: /create admin account|创建管理员账[号户]/i }).click();
+	} else {
+		await page.getByPlaceholder(/email|邮箱/i).fill('ada@example.com');
+		await page.getByPlaceholder(/password|密码/i).fill('secret1');
+		await page.getByRole('button', { name: /sign in|登录/i }).click();
+	}
+	await expect(page.locator('#chat-input')).toBeVisible();
+
+	await page.goto('/tools');
+	await expect(page.getByRole('button', { name: /翻译|Translate/ }).first()).toBeVisible();
+	await page.getByRole('button', { name: /润色|Polish/ }).first().click();
+	await expect(page.getByRole('button', { name: /润色|Polish/ }).first()).toBeVisible();
+	await page.getByRole('button', { name: /总结|Summarize/ }).first().click();
+	await expect(page.getByText(/联网搜索|Web Search/)).toBeVisible();
+
+	await page.goto('/');
+	await expect(page.locator('#chat-input')).toBeVisible();
+	await page.locator('body').click({ position: { x: 8, y: 8 } });
+	await page.keyboard.press('Control+Slash');
+	await expect(page.getByText(/键盘快捷键|Keyboard shortcuts/)).toBeVisible();
+	await page.keyboard.press('Escape');
+
+	await page.setViewportSize({ width: 390, height: 844 });
+	await page.locator('#sidebar-toggle-button').click();
+	await expect(page.getByRole('link', { name: /工具|Tools/ })).toBeVisible();
+	const overflow = await page.evaluate(() => document.documentElement.scrollWidth > window.innerWidth + 2);
+	expect(overflow).toBe(false);
+});

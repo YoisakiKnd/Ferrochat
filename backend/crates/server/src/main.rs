@@ -122,6 +122,47 @@ async fn load_secret(config: &Config) -> anyhow::Result<String> {
     Ok(generated)
 }
 
+fn media_type(name: &str) -> mime_guess::Mime {
+    let name = name.rsplit('/').next().unwrap_or(name);
+    let name = name
+        .strip_suffix(".br")
+        .or_else(|| name.strip_suffix(".gz"))
+        .unwrap_or(name);
+    mime_guess::from_path(name).first_or_octet_stream()
+}
+
+fn cache_control(path: &str) -> &'static str {
+    if path.contains("_app/immutable/") {
+        "public, max-age=31536000, immutable"
+    } else if path.ends_with(".html") || !path.contains('.') {
+        "no-cache"
+    } else {
+        "public, max-age=3600"
+    }
+}
+
+fn compressed_candidate(path: &str, accept: &str) -> Option<(&'static str, String)> {
+    let skip = path.ends_with(".png")
+        || path.ends_with(".jpg")
+        || path.ends_with(".jpeg")
+        || path.ends_with(".webp")
+        || path.ends_with(".gif")
+        || path.ends_with(".wasm")
+        || path.ends_with(".woff2")
+        || path.ends_with(".br")
+        || path.ends_with(".gz");
+    if skip {
+        return None;
+    }
+    if accept.contains("br") {
+        Some(("br", format!("{path}.br")))
+    } else if accept.contains("gzip") {
+        Some(("gzip", format!("{path}.gz")))
+    } else {
+        None
+    }
+}
+
 async fn spa(State(app): State<Arc<App>>, req: Request) -> Response {
     let path = req.uri().path().trim_start_matches('/');
     if path.starts_with("api/") || path.starts_with("ollama/") || path.starts_with("openai/") {
@@ -133,33 +174,64 @@ async fn spa(State(app): State<Arc<App>>, req: Request) -> Response {
             .unwrap();
     }
     let path = if path.is_empty() { "index.html" } else { path };
+    let accept = req
+        .headers()
+        .get(header::ACCEPT_ENCODING)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
     if let Some(dir) = &app.frontend_dir {
-        let file = dir.join(path);
+        let (file, encoding) = if let Some((encoding, extra)) = compressed_candidate(path, accept) {
+            let compressed = dir.join(&extra);
+            if compressed.is_file() {
+                (compressed, Some(encoding))
+            } else {
+                (dir.join(path), None)
+            }
+        } else {
+            (dir.join(path), None)
+        };
         let file = if file.is_file() {
             file
         } else {
             dir.join("index.html")
         };
         if let Ok(bytes) = tokio::fs::read(&file).await {
-            let mime = mime_guess::from_path(&file).first_or_octet_stream();
-            return Response::builder()
+            let mime = media_type(&file.to_string_lossy());
+            let mut builder = Response::builder()
                 .header(header::CONTENT_TYPE, mime.as_ref())
-                .body(Body::from(bytes))
-                .unwrap();
+                .header(header::CACHE_CONTROL, cache_control(path))
+                .header(header::VARY, "Accept-Encoding");
+            if let Some(encoding) = encoding {
+                builder = builder.header(header::CONTENT_ENCODING, encoding);
+            }
+            return builder.body(Body::from(bytes)).unwrap();
         }
     }
-    let asset_path = if Assets::get(path).is_some() {
-        path
+    let (asset_path, encoding) = if let Some((encoding, extra)) = compressed_candidate(path, accept)
+    {
+        if Assets::get(&extra).is_some() {
+            (extra, Some(encoding))
+        } else if Assets::get(path).is_some() {
+            (path.to_string(), None)
+        } else {
+            ("index.html".to_string(), None)
+        }
+    } else if Assets::get(path).is_some() {
+        (path.to_string(), None)
     } else {
-        "index.html"
+        ("index.html".to_string(), None)
     };
-    match Assets::get(asset_path) {
+    match Assets::get(&asset_path) {
         Some(file) => {
-            let mime = mime_guess::from_path(asset_path).first_or_octet_stream();
-            Response::builder()
+            let mime = media_type(&asset_path);
+            let mut builder = Response::builder()
                 .header(header::CONTENT_TYPE, mime.as_ref())
-                .body(Body::from(file.data.into_owned()))
-                .unwrap()
+                .header(header::CACHE_CONTROL, cache_control(path))
+                .header(header::VARY, "Accept-Encoding");
+            if let Some(encoding) = encoding {
+                builder = builder.header(header::CONTENT_ENCODING, encoding);
+            }
+            builder.body(Body::from(file.data.into_owned())).unwrap()
         }
         None => (StatusCode::NOT_FOUND, "frontend is not built").into_response(),
     }

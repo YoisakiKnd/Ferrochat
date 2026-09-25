@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { toast } from 'svelte-sonner';
-	import { marked } from 'marked';
+	import { ensureMarked } from '$lib/utils/marked';
 
 	import { onMount, getContext, tick, createEventDispatcher } from 'svelte';
 	import { blur, fade } from 'svelte/transition';
@@ -41,6 +41,22 @@
 	export let toolServers = [];
 
 	let models = [];
+	let modelDescriptionHtml = '';
+
+	$: {
+		const description = models[selectedModelIdx]?.info?.meta?.description ?? '';
+		if (!description) {
+			modelDescriptionHtml = '';
+		} else {
+			const plain = sanitizeResponseContent(description);
+			modelDescriptionHtml = plain;
+			ensureMarked().then((marked) => {
+				if ((models[selectedModelIdx]?.info?.meta?.description ?? '') === description) {
+					modelDescriptionHtml = marked.parse(plain);
+				}
+			});
+		}
+	}
 
 	const selectSuggestionPrompt = async (p) => {
 		let text = p;
@@ -101,6 +117,12 @@
 		</Tooltip>
 	{/if}
 
+	{#if $_models.filter((model) => String(model.id).includes(':')).length === 0}
+		<div class="mb-4 text-sm text-gray-500">
+			<a class="underline" href="/admin/settings">{$i18n.t('Add a provider')}</a>
+		</div>
+	{/if}
+
 	<div
 		class="w-full text-3xl text-gray-800 dark:text-gray-100 text-center flex items-center gap-4 font-primary"
 	>
@@ -150,17 +172,13 @@
 					{#if models[selectedModelIdx]?.info?.meta?.description ?? null}
 						<Tooltip
 							className=" w-fit"
-							content={marked.parse(
-								sanitizeResponseContent(models[selectedModelIdx]?.info?.meta?.description ?? '')
-							)}
+							content={modelDescriptionHtml}
 							placement="top"
 						>
 							<div
 								class="mt-0.5 px-2 text-sm font-normal text-gray-500 dark:text-gray-400 line-clamp-2 max-w-xl markdown"
 							>
-								{@html marked.parse(
-									sanitizeResponseContent(models[selectedModelIdx]?.info?.meta?.description)
-								)}
+								{@html modelDescriptionHtml}
 							</div>
 						</Tooltip>
 

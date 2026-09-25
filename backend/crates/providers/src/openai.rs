@@ -88,8 +88,22 @@ impl ChatProvider for OpenAi {
                         .or_else(|| delta.get("reasoning"))
                         .and_then(|c| c.as_str())
                         .map(|s| s.to_string()),
+                    prompt_tokens: v.pointer("/usage/prompt_tokens").and_then(|n| n.as_i64()),
+                    completion_tokens: v.pointer("/usage/completion_tokens").and_then(|n| n.as_i64()),
                     ..Default::default()
                 };
+                if let Some(anns) = delta.get("annotations").and_then(|v| v.as_array()) {
+                    for ann in anns {
+                        if let Some(url) = ann.pointer("/url_citation/url").and_then(|v| v.as_str())
+                        {
+                            let title = ann
+                                .pointer("/url_citation/title")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or(url);
+                            chunk.citations.push((title.to_string(), url.to_string()));
+                        }
+                    }
+                }
                 if let Some(calls) = delta.get("tool_calls").and_then(|v| v.as_array()) {
                     for call in calls {
                         chunk.tool_calls.push(ToolCallDelta {
