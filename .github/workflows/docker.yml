@@ -2,6 +2,16 @@ name: docker
 on:
   push:
     tags: ["v*"]
+  workflow_dispatch: {}
+# Re-pointing a release tag must never let two image-publish runs interleave;
+# serializing keeps :latest, :x.y and :x.y.z consistent in one merge.
+concurrency:
+  group: docker-${{ github.ref }}
+  cancel-in-progress: false
+env:
+  # workflow_dispatch has no v* ref, so semver tag patterns would collapse to
+  # nothing; point the metadata at the release being reconciled instead.
+  RELEASE_TAG: ${{ github.ref_type == 'tag' && github.ref_name || 'v0.2.0' }}
 jobs:
   build:
     strategy:
@@ -30,8 +40,8 @@ jobs:
         with:
           images: ${{ steps.image.outputs.name }}
           tags: |
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
+            type=semver,pattern={{version}},value=${{ env.RELEASE_TAG }}
+            type=semver,pattern={{major}}.{{minor}},value=${{ env.RELEASE_TAG }}
             type=raw,value=latest
       - id: build
         uses: docker/build-push-action@v6
@@ -60,7 +70,7 @@ jobs:
         with:
           images: ${{ steps.image.outputs.name }}
           tags: |
-            type=semver,pattern={{version}}-full
+            type=semver,pattern={{version}}-full,value=${{ env.RELEASE_TAG }}
             type=raw,value=full
       - id: build-full
         uses: docker/build-push-action@v6
@@ -111,15 +121,15 @@ jobs:
         with:
           images: ${{ steps.image.outputs.name }}
           tags: |
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
+            type=semver,pattern={{version}},value=${{ env.RELEASE_TAG }}
+            type=semver,pattern={{major}}.{{minor}},value=${{ env.RELEASE_TAG }}
             type=raw,value=latest
       - id: meta-full
         uses: docker/metadata-action@v5
         with:
           images: ${{ steps.image.outputs.name }}
           tags: |
-            type=semver,pattern={{version}}-full
+            type=semver,pattern={{version}}-full,value=${{ env.RELEASE_TAG }}
             type=raw,value=full
       - name: create manifest
         run: |
