@@ -1,0 +1,45 @@
+
+Running 3 tests using 1 worker
+
+(node:2841855) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+(Use `node --trace-warnings ...` to show where the warning was created)
+  ✓  1 e2e/smoke.spec.ts:14:1 › signup, provider model picking, models admin, and chat (2.6s)
+  ✘  2 e2e/smoke.spec.ts:81:1 › plain textarea can send before rich text loads (1.2s)
+(node:2841950) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+(Use `node --trace-warnings ...` to show where the warning was created)
+  ✓  3 e2e/smoke.spec.ts:107:1 › tools page, shortcuts, and a phone-width layout (1.6s)
+
+
+  1) e2e/smoke.spec.ts:81:1 › plain textarea can send before rich text loads ───────────────────────
+
+    Error: expect(locator).toBeVisible() failed
+
+    Locator: getByText(/Hello/)
+    Expected: visible
+    Error: strict mode violation: getByText(/Hello/) resolved to 4 elements:
+        1) <div dir="auto" class="h-[20px] truncate">Hello there</div> aka getByText('Hello there').first()
+        2) <div dir="auto" class="h-[20px] truncate">Hello there</div> aka getByText('Hello there').nth(1)
+        3) <p dir="auto">Hello t=0.3 </p> aka getByText('Hello t=')
+        4) <button type="button" class="px-2.5 py-1 text-xs rounded-full bg-gray-50 dark:bg-gray-850 hover:bg-gray-100 dark:hover:bg-gray-800">Hello </button> aka getByRole('button', { name: 'Hello' })
+
+    Call log:
+      - Expect "toBeVisible" getByText(/Hello/) with timeout 20000ms
+      - waiting for getByText(/Hello/)
+        2 × locator resolved to <div dir="auto" class="h-[20px] truncate">Hello there</div>
+          - unexpected value "hidden"
+
+
+      102 | 	await input.fill('hi');
+      103 | 	await input.press('Enter');
+    > 104 | 	await expect(page.getByText(/Hello/)).toBeVisible({ timeout: 20000 });
+          | 	                                      ^
+      105 | });
+      106 |
+      107 | test('tools page, shortcuts, and a phone-width layout', async ({ page }) => {
+        at /home/ubuntu/Codes/Ferrochat/frontend/e2e/smoke.spec.ts:104:40
+
+    Error Context: test-results/smoke-plain-textarea-can-send-before-rich-text-loads/error-context.md
+
+  1 failed
+    e2e/smoke.spec.ts:81:1 › plain textarea can send before rich text loads ────────────────────────
+  2 passed (7.0s)

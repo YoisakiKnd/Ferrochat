@@ -48,8 +48,14 @@ jobs:
             export CC_aarch64_unknown_linux_musl=$TARGET_CC \
                    CXX_aarch64_unknown_linux_musl=$TARGET_CXX \
                    AR_aarch64_unknown_linux_musl=$TARGET_AR
-            cargo build --release --manifest-path backend/Cargo.toml --target aarch64-unknown-linux-musl --bin ferrochat'
+            cargo build --release --manifest-path backend/Cargo.toml --target aarch64-unknown-linux-musl --bin ferrochat
+            # The container runs as root, so everything it creates is root-owned:
+            # checksum here, on the host this directory is not writable.
+            bin=backend/target/aarch64-unknown-linux-musl/release/ferrochat
+            sha256sum "$bin" > "$bin.sha256"
+            chmod a+r "$bin" "$bin.sha256"'
       - name: checksum
+        if: ${{ !matrix.docker }}
         shell: bash
         run: |
           bin=backend/target/${{ matrix.target }}/release/ferrochat${{ matrix.exe }}

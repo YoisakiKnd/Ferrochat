@@ -1,4 +1,5 @@
 import { expect, test, type Page } from '@playwright/test';
+import { login } from './auth';
 
 const api = async (page: Page, path: string, body?: unknown) => {
 	const token = await page.evaluate(() => localStorage.token);
@@ -12,13 +13,7 @@ const api = async (page: Page, path: string, body?: unknown) => {
 };
 
 test('signup, provider model picking, models admin, and chat', async ({ page }) => {
-	await page.goto('/auth');
-	await page.getByRole('button', { name: /get started|开始使用/i }).click();
-	await page.getByPlaceholder(/email|邮箱/i).fill('ada@example.com');
-	await page.getByPlaceholder(/password|密码/i).fill('secret1');
-	const name = page.getByPlaceholder(/name|名称/i);
-	if (await name.count()) await name.fill('Ada');
-	await page.getByRole('button', { name: /create admin account|创建管理员账[号户]/i }).click();
+	await login(page, 'ada@example.com', 'Ada');
 	await expect(page.locator('#chat-input')).toBeVisible();
 
 	await api(page, '/providers', {
@@ -82,43 +77,19 @@ test('plain textarea can send before rich text loads', async ({ page }) => {
 	await page.addInitScript(() => {
 		window.requestIdleCallback = () => 0;
 	});
-	await page.goto('/auth');
-	const start = page.getByRole('button', { name: /get started|开始使用/i });
-	if (await start.count()) {
-		await start.click();
-		await page.getByPlaceholder(/email|邮箱/i).fill('ada@example.com');
-		await page.getByPlaceholder(/password|密码/i).fill('secret1');
-		const name = page.getByPlaceholder(/name|名称/i);
-		if (await name.count()) await name.fill('Ada');
-		await page.getByRole('button', { name: /create admin account|创建管理员账[号户]/i }).click();
-	} else {
-		await page.getByPlaceholder(/email|邮箱/i).fill('ada@example.com');
-		await page.getByPlaceholder(/password|密码/i).fill('secret1');
-		await page.getByRole('button', { name: /sign in|登录/i }).click();
-	}
+	await login(page, 'ada@example.com', 'Ada');
 	const input = page.locator('#chat-input');
 	await expect(input).toBeVisible();
 	await expect.poll(async () => input.evaluate((el) => el.tagName)).toBe('TEXTAREA');
 	await input.fill('hi');
 	await input.press('Enter');
-	await expect(page.getByText(/Hello/)).toBeVisible({ timeout: 20000 });
+	// Match the assistant message body, not the auto-generated sidebar title
+	// ("Hello there") or the send-suggestion chip ("Hello ") that share the word.
+	await expect(page.getByText(/Hello t=/)).toBeVisible({ timeout: 20000 });
 });
 
 test('tools page, shortcuts, and a phone-width layout', async ({ page }) => {
-	await page.goto('/auth');
-	const start = page.getByRole('button', { name: /get started|开始使用/i });
-	if (await start.count()) {
-		await start.click();
-		await page.getByPlaceholder(/email|邮箱/i).fill('bea@example.com');
-		await page.getByPlaceholder(/password|密码/i).fill('secret1');
-		const name = page.getByPlaceholder(/name|名称/i);
-		if (await name.count()) await name.fill('Bea');
-		await page.getByRole('button', { name: /create admin account|创建管理员账[号户]/i }).click();
-	} else {
-		await page.getByPlaceholder(/email|邮箱/i).fill('ada@example.com');
-		await page.getByPlaceholder(/password|密码/i).fill('secret1');
-		await page.getByRole('button', { name: /sign in|登录/i }).click();
-	}
+	await login(page, 'bea@example.com', 'Bea', 'ada@example.com');
 	await expect(page.locator('#chat-input')).toBeVisible();
 
 	await page.goto('/tools');

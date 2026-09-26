@@ -1,31 +1,13 @@
-import { expect, test, type Page } from '@playwright/test';
+import { expect, test } from '@playwright/test';
+import { login } from './auth';
 
 // These endpoints were 404s or stubs while the frontend already called them.
 // Keep the URL paths and body shapes identical to `$lib/apis/chats` so a rename
 // on either side fails here instead of shipping a dead button.
 // Titles are tagged @chats: CI runs them only on release tags (see .github/workflows/ci.yml).
 
-async function login(page: Page): Promise<string> {
-	await page.goto('/auth');
-	const start = page.getByRole('button', { name: /get started|开始使用/i });
-	if (await start.count()) {
-		await start.click();
-		await page.getByPlaceholder(/email|邮箱/i).fill('ada@example.com');
-		await page.getByPlaceholder(/password|密码/i).fill('secret1');
-		const name = page.getByPlaceholder(/name|名称/i);
-		if (await name.count()) await name.fill('Ada');
-		await page.getByRole('button', { name: /create admin account|创建管理员账[号户]/i }).click();
-	} else {
-		await page.getByPlaceholder(/email|邮箱/i).fill('ada@example.com');
-		await page.getByPlaceholder(/password|密码/i).fill('secret1');
-		await page.getByRole('button', { name: /sign in|登录/i }).click();
-	}
-	await expect(page.locator('#chat-input')).toBeVisible();
-	return page.evaluate(() => localStorage.token);
-}
-
 test('@chats archive toggles and the archived lists agree', async ({ page }) => {
-	const token = await login(page);
+	const token = await login(page, 'ada@example.com', 'Ada');
 	const call = async (method: string, path: string, body?: unknown) => {
 		const res = await page.request.fetch(`/api/v1${path}`, {
 			method,
@@ -61,7 +43,7 @@ test('@chats archive toggles and the archived lists agree', async ({ page }) => 
 });
 
 test('@chats tag add, filter, and delete roundtrip', async ({ page }) => {
-	const token = await login(page);
+	const token = await login(page, 'ada@example.com', 'Ada');
 	const call = async (method: string, path: string, body?: unknown) => {
 		const res = await page.request.fetch(`/api/v1${path}`, {
 			method,

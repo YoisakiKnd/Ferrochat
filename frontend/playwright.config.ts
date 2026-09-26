@@ -5,6 +5,10 @@ const port = process.env.FERROCHAT_E2E_PORT ?? '8091';
 export default defineConfig({
 	testDir: './e2e',
 	timeout: 60000,
+	// The specs share the single webServer and its database, so signup must
+	// not race a second worker (or a second spec) against the same fresh state.
+	fullyParallel: false,
+	workers: 1,
 	use: { baseURL: process.env.FERROCHAT_URL ?? `http://127.0.0.1:${port}` },
 	webServer: process.env.FERROCHAT_URL
 		? undefined
