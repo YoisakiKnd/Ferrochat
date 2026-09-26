@@ -39,6 +39,8 @@ jobs:
         uses: docker/metadata-action@v5
         with:
           images: ${{ steps.image.outputs.name }}
+          flavor: |
+            latest=false
           tags: |
             type=semver,pattern={{version}},value=${{ env.RELEASE_TAG }}
             type=semver,pattern={{major}}.{{minor}},value=${{ env.RELEASE_TAG }}
@@ -69,8 +71,10 @@ jobs:
         uses: docker/metadata-action@v5
         with:
           images: ${{ steps.image.outputs.name }}
+          flavor: |
+            latest=false
           tags: |
-            type=semver,pattern={{version}}-full,value=${{ env.RELEASE_TAG }}
+            type=semver,pattern={{version}},suffix=-full,value=${{ env.RELEASE_TAG }}
             type=raw,value=full
       - id: build-full
         uses: docker/build-push-action@v6
@@ -120,6 +124,8 @@ jobs:
         id: meta
         with:
           images: ${{ steps.image.outputs.name }}
+          flavor: |
+            latest=false
           tags: |
             type=semver,pattern={{version}},value=${{ env.RELEASE_TAG }}
             type=semver,pattern={{major}}.{{minor}},value=${{ env.RELEASE_TAG }}
@@ -128,8 +134,10 @@ jobs:
         uses: docker/metadata-action@v5
         with:
           images: ${{ steps.image.outputs.name }}
+          flavor: |
+            latest=false
           tags: |
-            type=semver,pattern={{version}}-full,value=${{ env.RELEASE_TAG }}
+            type=semver,pattern={{version}},suffix=-full,value=${{ env.RELEASE_TAG }}
             type=raw,value=full
       - name: create manifest
         run: |

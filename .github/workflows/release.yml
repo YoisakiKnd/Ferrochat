@@ -79,3 +79,6 @@ jobs:
       - uses: softprops/action-gh-release@v2
         with:
           files: dist/**/*
+          # Re-pointing a release tag re-runs publish against the existing
+          # release; without this, uploading the same asset names fails.
+          overwrite_files: true
