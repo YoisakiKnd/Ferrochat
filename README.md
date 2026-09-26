@@ -64,7 +64,7 @@ By default the server binds `0.0.0.0` and the API accepts any origin; sessions a
 
 Copy the data directory before upgrading. The SQLite file is `ferrochat.db` inside that directory. Schema changes ship as new files under `backend/crates/db/migrations`. Do not edit a migration that has already been applied; add the next numbered file instead.
 
-Releases are semver tags (`v0.2.0`). See `CHANGELOG.md`. GitHub Release assets include a `.sha256` file next to each binary.
+Releases are semver tags (`v0.2.1`). See `CHANGELOG.md`. GitHub Release assets include a `.sha256` file next to each binary.
 
 ## What it keeps
 

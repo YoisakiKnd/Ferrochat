@@ -1,6 +1,8 @@
 # Changelog
 
-## Unreleased
+## 0.2.1 - 2026-09-26
+
+- The web-search settings page no longer ships a real private deployment URL. The SearXNG placeholder, the help text (English plus zh-CN/zh-TW locales), and two `join_base` test assertions now use `https://searx.example.com`. Stored settings are untouched; only example strings changed.
 
 - Reasoning blocks no longer spin forever. The backend closed `</details>` but never flipped the injected `done="false"` marker, so the frontend `Collapsible` kept showing the "Thinking..." spinner on completed messages, in saved history, and after reload. `finalize_reasoning` now rewrites the open block in place to `done="true" duration="N"` (measured from first reasoning delta to first answer delta) before the closing tag is appended, so both the live `done` event and the stored message render "Thought for N seconds". Verified end to end against a streaming provider that emits `reasoning_content`.
 - Fixed image tag clobbering: `docker/metadata-action` applies `latest=auto` to every `type=semver` entry, so the `-full` variant step also emitted bare `:x.y.z`/`:x.y` tags and its manifest create raced over the slim ones (`:latest` had been left pointing at an older build after `v0.2.0` was re-pointed). Both steps now pin `flavor: latest=false` and express `-full` as an explicit per-tag suffix.

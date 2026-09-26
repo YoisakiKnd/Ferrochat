@@ -614,7 +614,7 @@ dependencies = [
 
 [[package]]
 name = "ferrochat-core"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "axum",
  "serde",
@@ -624,7 +624,7 @@ dependencies = [
 
 [[package]]
 name = "ferrochat-db"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "ferrochat-core",
  "serde",
@@ -636,7 +636,7 @@ dependencies = [
 
 [[package]]
 name = "ferrochat-mcp"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "ferrochat-core",
  "reqwest",
@@ -648,7 +648,7 @@ dependencies = [
 
 [[package]]
 name = "ferrochat-providers"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "async-trait",
  "eventsource-stream",
@@ -664,7 +664,7 @@ dependencies = [
 
 [[package]]
 name = "ferrochat-search"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "ferrochat-core",
  "reqwest",
@@ -675,7 +675,7 @@ dependencies = [
 
 [[package]]
 name = "ferrochat-server"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "anyhow",
  "argon2",
