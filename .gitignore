@@ -10,3 +10,6 @@ data/
 .env
 .DS_Store
 .codegraph/
+
+frontend/playwright.log
+frontend/webserver.log
