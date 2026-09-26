@@ -7,7 +7,15 @@ use ferrochat_search::{self, Hit, Query};
 use futures::StreamExt;
 use serde_json::{json, Value};
 use std::sync::Arc;
+use std::time::Instant;
 use uuid::Uuid;
+
+/// Opening tag the backend injects when a model streams reasoning. The
+/// `done="false"` marker is rewritten to `done="true" duration="N"` once the
+/// thinking block closes; the frontend `Collapsible` keys its spinner off it.
+const REASONING_OPEN: &str =
+    "\n<details type=\"reasoning\" done=\"false\">\n<summary>Thinking...</summary>\n";
+const DONE_FALSE: &str = "done=\"false\"";
 
 pub async fn run(app: Arc<App>, user: CurrentUser, form: Value) -> Result<Value, AppError> {
     let task_id = Uuid::new_v4().to_string();
@@ -144,7 +152,7 @@ async fn drive(
     let mut tool_schemas = openai_tools(&tools);
     let mut full = String::new();
     let mut reasoning = String::new();
-    let mut reasoning_open = false;
+    let mut reasoning_span: Option<(usize, Instant)> = None;
     let mut reported_prompt: Option<i64> = None;
     let mut reported_completion: Option<i64> = None;
 
@@ -195,7 +203,7 @@ async fn drive(
                 &chunk,
                 &mut full,
                 &mut reasoning,
-                &mut reasoning_open,
+                &mut reasoning_span,
             );
             for (title, url) in &chunk.citations {
                 emit(
@@ -232,10 +240,7 @@ async fn drive(
                 break;
             }
         }
-        if reasoning_open {
-            full.push_str("\n</details>\n");
-            reasoning_open = false;
-        }
+        finalize_reasoning(&mut full, &mut reasoning_span);
         let pending: Vec<Accum> = calls.into_iter().filter(|c| !c.name.is_empty()).collect();
         if pending.is_empty() || tools.is_empty() {
             break;
@@ -370,25 +375,42 @@ async fn drive(
     Ok(())
 }
 
+/// Close the open reasoning block, if any: rewrite its `done="false"` marker
+/// to `done="true" duration="N"` in `full` and append the closing tag. Returns
+/// the closing delta so the caller can stream it. Byte offsets recorded at open
+/// time stay valid because everything after them is appended, never inserted.
+fn finalize_reasoning(full: &mut String, span: &mut Option<(usize, Instant)>) -> Option<String> {
+    let (done_at, started) = span.take()?;
+    let secs = started.elapsed().as_secs();
+    if full.get(done_at..done_at + DONE_FALSE.len()) == Some(DONE_FALSE) {
+        full.replace_range(
+            done_at..done_at + DONE_FALSE.len(),
+            &format!("done=\"true\" duration=\"{secs}\""),
+        );
+    }
+    let end = "\n</details>\n";
+    full.push_str(end);
+    Some(end.to_string())
+}
+
 fn apply_chunk(
     app: &App,
     form: &Value,
     chunk: &ChatChunk,
     full: &mut String,
     reasoning: &mut String,
-    open: &mut bool,
+    span: &mut Option<(usize, Instant)>,
 ) {
     if let Some(text) = &chunk.reasoning {
-        if !*open {
-            let start =
-                "\n<details type=\"reasoning\" done=\"false\">\n<summary>Thinking...</summary>\n";
-            full.push_str(start);
+        if span.is_none() {
+            let done_at = full.len() + REASONING_OPEN.find(DONE_FALSE).unwrap_or(0);
+            full.push_str(REASONING_OPEN);
             emit(
                 app,
                 form,
-                json!({"type":"chat:completion","data":{"choices":[{"delta":{"content": start}}]}}),
+                json!({"type":"chat:completion","data":{"choices":[{"delta":{"content": REASONING_OPEN}}]}}),
             );
-            *open = true;
+            *span = Some((done_at, Instant::now()));
         }
         reasoning.push_str(text);
         full.push_str(text);
@@ -399,15 +421,12 @@ fn apply_chunk(
         );
     }
     if let Some(text) = &chunk.content {
-        if *open {
-            let end = "\n</details>\n";
-            full.push_str(end);
+        if let Some(end) = finalize_reasoning(full, span) {
             emit(
                 app,
                 form,
                 json!({"type":"chat:completion","data":{"choices":[{"delta":{"content": end}}]}}),
             );
-            *open = false;
         }
         full.push_str(text);
         emit(
@@ -1368,9 +1387,52 @@ async fn maybe_tags(
 
 #[cfg(test)]
 mod tests {
-    use super::{compress_messages, trim_messages};
+    use super::{compress_messages, finalize_reasoning, trim_messages, DONE_FALSE, REASONING_OPEN};
     use ferrochat_providers::{build, Conn};
     use serde_json::json;
+    use std::time::Instant;
+
+    #[test]
+    fn closed_reasoning_block_is_marked_done_with_duration() {
+        let mut full = String::new();
+        let done_at = full.len() + REASONING_OPEN.find(DONE_FALSE).unwrap();
+        full.push_str(REASONING_OPEN);
+        full.push_str("先想一下中文问候");
+        let mut span = Some((done_at, Instant::now()));
+        assert_eq!(
+            finalize_reasoning(&mut full, &mut span).as_deref(),
+            Some("\n</details>\n")
+        );
+        assert!(span.is_none());
+        assert!(!full.contains(DONE_FALSE));
+        assert!(full.contains("done=\"true\" duration=\""));
+        assert!(full.ends_with("先想一下中文问候\n</details>\n"));
+    }
+
+    #[test]
+    fn closing_without_an_open_block_changes_nothing() {
+        let mut full = "plain answer".to_string();
+        let mut span = None;
+        assert!(finalize_reasoning(&mut full, &mut span).is_none());
+        assert_eq!(full, "plain answer");
+    }
+
+    #[test]
+    fn sequential_reasoning_blocks_each_keep_their_own_marker() {
+        let mut full = String::new();
+        let mut span = None;
+        for round in 0..2 {
+            let done_at = full.len() + REASONING_OPEN.find(DONE_FALSE).unwrap();
+            full.push_str(REASONING_OPEN);
+            full.push_str(&format!("r{round}"));
+            span = Some((done_at, Instant::now()));
+            finalize_reasoning(&mut full, &mut span);
+            full.push_str(&format!("answer{round}"));
+        }
+        assert!(!full.contains(DONE_FALSE));
+        assert_eq!(full.matches("done=\"true\"").count(), 2);
+        assert_eq!(full.matches("</details>").count(), 2);
+    }
 
     #[test]
     fn keeps_recent_messages_and_summarizes_the_rest() {
