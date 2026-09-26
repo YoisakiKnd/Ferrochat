@@ -554,12 +554,12 @@ mod tests {
     #[test]
     fn base_url_drops_a_pasted_path() {
         assert_eq!(
-            join_base("https://search.hyw.mom/search?q=1", "/search"),
-            "https://search.hyw.mom/search"
+            join_base("https://searx.example.com/search?q=1", "/search"),
+            "https://searx.example.com/search"
         );
         assert_eq!(
-            join_base("https://search.hyw.mom", "/search"),
-            "https://search.hyw.mom/search"
+            join_base("https://searx.example.com", "/search"),
+            "https://searx.example.com/search"
         );
     }
 

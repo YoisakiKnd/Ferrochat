@@ -27,7 +27,7 @@
 	];
 
 	const basePlaceholder = {
-		searxng: 'https://search.hyw.mom',
+		searxng: 'https://searx.example.com',
 		tavily: 'https://api.tavily.com',
 		brave: 'https://api.search.brave.com',
 		bing: 'https://api.bing.microsoft.com',
@@ -111,7 +111,7 @@
 	<div class="text-sm font-medium">{$i18n.t('Web Search')}</div>
 	<div class="text-xs text-gray-500">
 		{$i18n.t(
-			'SearXNG is the recommended engine. Enter only the site root, such as https://search.hyw.mom. The request path is added automatically. The same applies to the other engines. Built-in model search is used when the model has the web capability; otherwise the engine below is used.'
+			'SearXNG is the recommended engine. Enter only the site root, such as https://searx.example.com. The request path is added automatically. The same applies to the other engines. Built-in model search is used when the model has the web capability; otherwise the engine below is used.'
 		)}
 	</div>
 	<label class="flex flex-col gap-1">

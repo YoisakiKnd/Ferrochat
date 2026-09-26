@@ -831,7 +831,7 @@
 	"Search engine id": "搜索引擎 ID",
 	"Search failed": "搜索失败",
 	"SearXNG (recommended)": "SearXNG（推荐）",
-	"SearXNG is the recommended engine. Enter only the site root, such as https://search.hyw.mom. The request path is added automatically. The same applies to the other engines. Built-in model search is used when the model has the web capability; otherwise the engine below is used.": "推荐使用 SearXNG。只需填写站点根地址，例如 https://search.hyw.mom，请求路径会自动拼上。其他引擎也一样。模型具备 web 能力时优先用模型自带联网，否则使用下面选择的引擎。",
+	"SearXNG is the recommended engine. Enter only the site root, such as https://searx.example.com. The request path is added automatically. The same applies to the other engines. Built-in model search is used when the model has the web capability; otherwise the engine below is used.": "推荐使用 SearXNG。只需填写站点根地址，例如 https://searx.example.com，请求路径会自动拼上。其他引擎也一样。模型具备 web 能力时优先用模型自带联网，否则使用下面选择的引擎。",
 	"Test": "测试",
 	"No search results": "没有搜到结果",
 	"Testing": "测试中",

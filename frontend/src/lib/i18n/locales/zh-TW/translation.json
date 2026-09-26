@@ -793,7 +793,7 @@
 	"Search engine id": "搜尋引擎 ID",
 	"Search failed": "搜尋失敗",
 	"SearXNG (recommended)": "SearXNG（推薦）",
-	"SearXNG is the recommended engine. Enter only the site root, such as https://search.hyw.mom. The request path is added automatically. The same applies to the other engines. Built-in model search is used when the model has the web capability; otherwise the engine below is used.": "建議使用 SearXNG。只需填寫網站根網址，例如 https://search.hyw.mom，請求路徑會自動接上。其他引擎也一樣。模型具備 web 能力時優先使用模型內建搜尋，否則使用下方選擇的引擎。",
+	"SearXNG is the recommended engine. Enter only the site root, such as https://searx.example.com. The request path is added automatically. The same applies to the other engines. Built-in model search is used when the model has the web capability; otherwise the engine below is used.": "建議使用 SearXNG。只需填寫網站根網址，例如 https://searx.example.com，請求路徑會自動接上。其他引擎也一樣。模型具備 web 能力時優先使用模型內建搜尋，否則使用下方選擇的引擎。",
 	"Test": "測試",
 	"No search results": "沒有搜到結果",
 	"Testing": "測試中",
