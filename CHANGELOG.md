@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- Fixed image tag clobbering: `docker/metadata-action` applies `latest=auto` to every `type=semver` entry, so the `-full` variant step also emitted bare `:x.y.z`/`:x.y` tags and its manifest create raced over the slim ones (`:latest` had been left pointing at an older build after `v0.2.0` was re-pointed). Both steps now pin `flavor: latest=false` and express `-full` as an explicit per-tag suffix.
+- Docker publish is serialized with a `concurrency` group, and the workflow gained a manual dispatch path (`RELEASE_TAG` feeds the semver value) for reconciling tags without moving the release tag.
+- Release publish sets `overwrite_files` so re-pointing a tag can re-upload assets against the existing GitHub release.
+
 ## 0.2.0 - 2026-09-26
 
 - Archiving a chat now toggles: a second request restores it, matching the frontend unarchive action. Added the list endpoints the frontend already called: `GET /chats/archived`, `GET /chats/all`, `GET /chats/all/archived`, `POST /chats/tags` (filter by tag), and `POST /chats/archive/all`.
