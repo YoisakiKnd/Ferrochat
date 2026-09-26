@@ -98,6 +98,10 @@
 	let richReady = false;
 	let richLoading = false;
 	let plainFocused = false;
+	// programmatic focus() below also dispatches a *trusted* focusin event, so an
+	// explicit flag is the only way to keep the on-mount autofocus from loading
+	// the rich editor before requestIdleCallback fires (see e2e "plain textarea").
+	let suppressFocusLoad = false;
 
 	const loadRichText = () => {
 		if (richReady || richLoading || !($settings?.richTextInput ?? true)) return;
@@ -334,7 +338,12 @@
 
 		window.setTimeout(() => {
 			const chatInput = document.getElementById('chat-input');
+			// Programmatic focus dispatches a trusted focusin; suppress the focus
+			// handler's rich-text load so the initial autofocus does not preempt the
+			// idle-callback path (and the e2e that verifies a plain textarea loads).
+			suppressFocusLoad = true;
 			chatInput?.focus();
+			suppressFocusLoad = false;
 		}, 0);
 		const schedule =
 			window.requestIdleCallback ?? ((cb) => window.setTimeout(cb, 300));
@@ -858,7 +867,7 @@
 											bind:value={prompt}
 											on:focus={(event) => {
 												plainFocused = true;
-												if (event.isTrusted) loadRichText();
+												if (event.isTrusted && !suppressFocusLoad) loadRichText();
 											}}
 											on:blur={() => (plainFocused = false)}
 											on:compositionstart={() => (isComposing = true)}
