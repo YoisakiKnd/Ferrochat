@@ -9,7 +9,9 @@ export default defineConfig({
 	webServer: process.env.FERROCHAT_URL
 		? undefined
 		: {
-				command: `rm -rf /tmp/ferrochat-e2e && FERROCHAT_DATA_DIR=/tmp/ferrochat-e2e FERROCHAT_FRONTEND_DIR=./build FERROCHAT_PORT=${port} cargo run --manifest-path ../backend/Cargo.toml --bin ferrochat`,
+				command: `rm -rf /tmp/ferrochat-e2e && FERROCHAT_DATA_DIR=/tmp/ferrochat-e2e FERROCHAT_FRONTEND_DIR=./build FERROCHAT_PORT=${port} cargo run --manifest-path ../backend/Cargo.toml --bin ferrochat${
+					process.env.PW_WEB_SERVER_LOGS ? ` 2>&1 | tee ${process.env.PW_WEB_SERVER_LOGS}` : ''
+				}`,
 				url: `http://127.0.0.1:${port}/health`,
 				reuseExistingServer: false,
 				timeout: 600000
