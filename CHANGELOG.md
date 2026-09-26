@@ -6,7 +6,9 @@
 - Removing a tag from a chat deletes it. `DELETE /chats/{id}/tags` was a stub that returned an empty list and left the tag in place; it now removes the named tag and drops tags that no longer have any chat.
 - Production builds strip `console.log`, `console.info`, and `console.debug` from the bundle; `warn` and `error` stay. Template-expression logging moved behind a DEV guard.
 - CI runs on pushes to `main` and on pull requests instead of release tags only. The Playwright suite tagged `@chats` still runs only on `v*` tags, so pull requests do not need Node browser installs.
-- The migration guard checks the whole migrations directory: the file set must be exactly 001–005, and every `*.sql.sha256` digest present is verified. Digests for 002–005 still need to be generated and committed.
+- The migration guard checks the whole migrations directory: the file set must be exactly 001–005, and every `*.sql.sha256` digest present is verified. Digests for 002–005 are committed.
+- Fixed the "plain textarea" e2e flake at its source: the on-mount autofocus dispatched a trusted focusin, so the focus handler loaded the rich editor before `requestIdleCallback` could. Programmatic autofocus no longer triggers the load.
+- Release builds cross-compile `aarch64-unknown-linux-musl` in a `messense/rust-musl-cross` container and `x86_64-unknown-linux-musl` with `musl-tools`; the checksum and upload steps use exact binary paths, and one platform failing no longer cancels the matrix.
 - Web search (SearXNG by default, plus Tavily, Brave, Bing, Google, DuckDuckGo, and model-native search), document excerpts with page citations, and long-term memory.
 - Browser speech input and optional OpenAI-compatible transcription and speech.
 - Follow-up questions, direct text streaming for selection ask/explain, Markdown/JSON/PDF export, FTS chat search with a hit snippet, temporary chats, and quote-to-input from the selection toolbar.
