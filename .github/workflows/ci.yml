@@ -1,7 +1,9 @@
 name: ci
 on:
   push:
+    branches: [main]
     tags: ["v*"]
+  pull_request:
 jobs:
   brand:
     runs-on: ubuntu-latest
@@ -28,14 +30,24 @@ jobs:
           python3 - << 'PY'
           import hashlib, pathlib
           root = pathlib.Path("backend/crates/db/migrations")
-          expected = {
-              "001_init.sql": open("backend/crates/db/migrations/001_init.sql.sha256").read().strip(),
+          known = {
+              "001_init.sql",
+              "002_models_share.sql",
+              "003_file_passages.sql",
+              "004_memories.sql",
+              "005_chat_search.sql",
           }
-          for name, digest in expected.items():
-              got = hashlib.sha256((root/name).read_bytes()).hexdigest()
-              if got != digest:
+          found = {p.name for p in root.glob("*.sql")}
+          if found != known:
+              raise SystemExit(f"migration set changed: added={sorted(found - known)} removed={sorted(known - found)}")
+          for digest_file in sorted(root.glob("*.sql.sha256")):
+              name = digest_file.name[: -len(".sha256")]
+              expected = digest_file.read_text().strip()
+              got = hashlib.sha256((root / name).read_bytes()).hexdigest()
+              if got != expected:
                   raise SystemExit(f"{name} changed ({got}); add a new migration instead")
-          print("migrations ok")
+          frozen = {p.name[: -len(".sha256")] for p in root.glob("*.sql.sha256")}
+          print("migrations ok, digest still needed for:", sorted(found - frozen) or "none")
           PY
   frontend:
     runs-on: ubuntu-latest
@@ -60,5 +72,9 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - run: npx playwright install --with-deps chromium
         working-directory: frontend
-      - run: npx playwright test
+      - run: npx playwright test --grep-invert "@chats"
+        working-directory: frontend
+      - name: Playwright chat suite (release tags only)
+        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+        run: npx playwright test --grep "@chats"
         working-directory: frontend

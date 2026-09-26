@@ -75,7 +75,10 @@ pub(crate) async fn file_content(
                     .first_or_octet_stream()
                     .to_string();
                 (
-                    [(header::CONTENT_TYPE, mime), (header::CONTENT_DISPOSITION, "inline".into())],
+                    [
+                        (header::CONTENT_TYPE, mime),
+                        (header::CONTENT_DISPOSITION, "inline".into()),
+                    ],
                     bytes,
                 )
                     .into_response()

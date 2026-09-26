@@ -148,13 +148,8 @@ async fn drive(
     let mut reported_prompt: Option<i64> = None;
     let mut reported_completion: Option<i64> = None;
 
-    if let Some((summary, covered)) = compress_messages(
-        &adapter,
-        &model_id,
-        form,
-        &mut messages,
-    )
-    .await
+    if let Some((summary, covered)) =
+        compress_messages(&adapter, &model_id, form, &mut messages).await
     {
         emit(
             &app,
@@ -294,7 +289,8 @@ async fn drive(
     let output_price = stored["output_price"]
         .as_f64()
         .unwrap_or_else(|| price_of(form, "output_price"));
-    let cost = (prompt_tokens as f64 * input_price + completion_tokens as f64 * output_price) / 1_000_000.0;
+    let cost = (prompt_tokens as f64 * input_price + completion_tokens as f64 * output_price)
+        / 1_000_000.0;
     let usage = json!({
         "prompt_tokens": prompt_tokens,
         "completion_tokens": completion_tokens,
@@ -341,7 +337,11 @@ async fn drive(
             }
         }
     }
-    if form.get("follow_up").and_then(|v| v.as_bool()).unwrap_or(true) {
+    if form
+        .get("follow_up")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(true)
+    {
         if let Some(questions) = follow_ups(&adapter, &model_id, &full).await {
             emit(
                 &app,
@@ -350,8 +350,14 @@ async fn drive(
             );
         }
     }
-    if form.get("memory").and_then(|v| v.as_bool()).unwrap_or(false)
-        && form.get("memory_suggest").and_then(|v| v.as_bool()).unwrap_or(true)
+    if form
+        .get("memory")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false)
+        && form
+            .get("memory_suggest")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(true)
     {
         if let Some(fact) = suggest_memory(&adapter, &model_id, &full).await {
             emit(
@@ -451,8 +457,15 @@ pub async fn stream_direct(
         .unwrap_or(false)
     {
         let mut messages = body.get("messages").cloned().unwrap_or(json!([]));
-        let (_native, sources) =
-            prepare_web_search(&app, &form, &mut messages, &adapter, &model_id, &provider_id).await;
+        let (_native, sources) = prepare_web_search(
+            &app,
+            &form,
+            &mut messages,
+            &adapter,
+            &model_id,
+            &provider_id,
+        )
+        .await;
         body["messages"] = messages;
         if !sources.is_empty() {
             let _ = tx
@@ -520,7 +533,13 @@ async fn follow_ups(
     }
     let questions: Vec<String> = raw
         .lines()
-        .map(|line| line.trim().trim_start_matches(|c: char| c.is_ascii_digit() || c == '.' || c == '-' || c == ' ').to_string())
+        .map(|line| {
+            line.trim()
+                .trim_start_matches(|c: char| {
+                    c.is_ascii_digit() || c == '.' || c == '-' || c == ' '
+                })
+                .to_string()
+        })
         .map(|line| line.trim().to_string())
         .filter(|line| !line.is_empty() && line.len() < 160)
         .take(3)
@@ -545,7 +564,10 @@ async fn compress_messages(
     form: &Value,
     messages: &mut Value,
 ) -> Option<(String, i64)> {
-    let limit = form.get("recent_messages").and_then(|v| v.as_i64()).unwrap_or(0);
+    let limit = form
+        .get("recent_messages")
+        .and_then(|v| v.as_i64())
+        .unwrap_or(0);
     if limit <= 0 {
         return None;
     }
@@ -591,7 +613,10 @@ async fn compress_messages(
     }
     let drop_count = rest.len() - limit as usize;
     let dropped: Vec<Value> = rest.drain(..drop_count).collect();
-    let auto = form.get("auto_summary").and_then(|v| v.as_bool()).unwrap_or(true);
+    let auto = form
+        .get("auto_summary")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(true);
     let fresh = if auto {
         summarize_dropped(adapter, model_id, &dropped).await
     } else {
@@ -605,7 +630,9 @@ async fn compress_messages(
     };
     arr.clear();
     arr.extend(system);
-    arr.push(json!({"role": "system", "content": format!("Earlier conversation summary:\n{summary}")}));
+    arr.push(
+        json!({"role": "system", "content": format!("Earlier conversation summary:\n{summary}")}),
+    );
     arr.extend(rest);
     Some((summary, (covered + drop_count) as i64))
 }
@@ -629,14 +656,21 @@ async fn summarize_dropped(
         }
     }
     let raw = raw.trim().to_string();
-    if raw.is_empty() { None } else { Some(raw) }
+    if raw.is_empty() {
+        None
+    } else {
+        Some(raw)
+    }
 }
 
 fn snippet_summary(dropped: &[Value]) -> String {
     let mut note = String::new();
     for message in dropped.iter().take(12) {
         let role = message.get("role").and_then(|v| v.as_str()).unwrap_or("");
-        let content = message.get("content").and_then(|v| v.as_str()).unwrap_or("");
+        let content = message
+            .get("content")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
         let snippet: String = content.chars().take(180).collect();
         note.push_str(&format!("{role}: {snippet}\n"));
     }
@@ -668,7 +702,10 @@ fn trim_messages(messages: &mut Value, limit: i64) {
     let mut note = String::from("Earlier conversation:\n");
     for message in rest.iter().take(drop_count).take(12) {
         let role = message.get("role").and_then(|v| v.as_str()).unwrap_or("");
-        let content = message.get("content").and_then(|v| v.as_str()).unwrap_or("");
+        let content = message
+            .get("content")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
         let snippet: String = content.chars().take(180).collect();
         note.push_str(&format!("{role}: {snippet}\n"));
     }
@@ -1205,7 +1242,10 @@ async fn attach_document_excerpts(app: &App, form: &Value, messages: &mut Value)
     let Some(list) = form.get("files").and_then(|v| v.as_array()) else {
         return;
     };
-    let ids: Vec<String> = list.iter().filter_map(|file| file_id(file).map(str::to_string)).collect();
+    let ids: Vec<String> = list
+        .iter()
+        .filter_map(|file| file_id(file).map(str::to_string))
+        .collect();
     if ids.is_empty() {
         return;
     }
@@ -1221,7 +1261,11 @@ async fn attach_document_excerpts(app: &App, form: &Value, messages: &mut Value)
             })
         })
         .unwrap_or("");
-    let hits = app.db.search_passages(&ids, query, 6).await.unwrap_or_default();
+    let hits = app
+        .db
+        .search_passages(&ids, query, 6)
+        .await
+        .unwrap_or_default();
     if hits.is_empty() {
         return;
     }

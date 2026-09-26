@@ -65,10 +65,16 @@ impl ChatProvider for Gemini {
                     continue;
                 }
                 let v: Value = serde_json::from_str(data).unwrap_or(json!({}));
-                if let Some(prompt) = v.pointer("/usageMetadata/promptTokenCount").and_then(|n| n.as_i64()) {
+                if let Some(prompt) = v
+                    .pointer("/usageMetadata/promptTokenCount")
+                    .and_then(|n| n.as_i64())
+                {
                     out.prompt_tokens = Some(prompt);
                 }
-                if let Some(completion) = v.pointer("/usageMetadata/candidatesTokenCount").and_then(|n| n.as_i64()) {
+                if let Some(completion) = v
+                    .pointer("/usageMetadata/candidatesTokenCount")
+                    .and_then(|n| n.as_i64())
+                {
                     out.completion_tokens = Some(completion);
                 }
                 if let Some(chunks) = v

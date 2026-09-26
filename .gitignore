@@ -9,3 +9,4 @@ data/
 *.db
 .env
 .DS_Store
+.codegraph/

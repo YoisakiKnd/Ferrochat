@@ -89,7 +89,9 @@ impl ChatProvider for OpenAi {
                         .and_then(|c| c.as_str())
                         .map(|s| s.to_string()),
                     prompt_tokens: v.pointer("/usage/prompt_tokens").and_then(|n| n.as_i64()),
-                    completion_tokens: v.pointer("/usage/completion_tokens").and_then(|n| n.as_i64()),
+                    completion_tokens: v
+                        .pointer("/usage/completion_tokens")
+                        .and_then(|n| n.as_i64()),
                     ..Default::default()
                 };
                 if let Some(anns) = delta.get("annotations").and_then(|v| v.as_array()) {

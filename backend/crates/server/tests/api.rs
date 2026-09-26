@@ -370,7 +370,8 @@ fn mock_usage_search_and_no_builtin_presets() {
         .as_array()
         .unwrap()
         .iter()
-        .any(|row| row["model"] == "mock:mock-model" && row["completion_tokens"].as_i64().unwrap_or(0) > 0));
+        .any(|row| row["model"] == "mock:mock-model"
+            && row["completion_tokens"].as_i64().unwrap_or(0) > 0));
 
     let chat = client
         .post(format!("{}/api/v1/chats/new", server.base))
@@ -381,13 +382,20 @@ fn mock_usage_search_and_no_builtin_presets() {
         .json::<serde_json::Value>()
         .unwrap();
     let found = client
-        .get(format!("{}/api/v1/chats/search?text=uniquephrasezeta", server.base))
+        .get(format!(
+            "{}/api/v1/chats/search?text=uniquephrasezeta",
+            server.base
+        ))
         .bearer_auth(&token)
         .send()
         .unwrap()
         .json::<serde_json::Value>()
         .unwrap();
-    assert!(found.as_array().unwrap().iter().any(|row| row["id"] == chat["id"]));
+    assert!(found
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|row| row["id"] == chat["id"]));
 
     let models = client
         .get(format!("{}/api/models", server.base))
@@ -517,4 +525,177 @@ fn tool_stream_prices_import_and_memory() {
         .text()
         .unwrap();
     assert!(memories.contains("Ada likes rust"), "{memories}");
+}
+
+#[test]
+fn archive_toggles_and_lists_stay_consistent() {
+    let server = spawn();
+    let token = signup(&server.base);
+    let client = reqwest::blocking::Client::new();
+    let mut create = |title: &str| -> String {
+        client
+            .post(format!("{}/api/v1/chats/new", server.base))
+            .bearer_auth(&token)
+            .json(&serde_json::json!({"chat":{"title":title,"history":{"messages":{}}}}))
+            .send()
+            .unwrap()
+            .error_for_status()
+            .unwrap()
+            .json::<serde_json::Value>()
+            .unwrap()["id"]
+            .as_str()
+            .unwrap()
+            .to_string()
+    };
+    let first = create("archive-me");
+    let second = create("keep-visible");
+    let ids = |arr: &serde_json::Value| -> Vec<String> {
+        arr.as_array()
+            .unwrap()
+            .iter()
+            .map(|c| c["id"].as_str().unwrap_or_default().to_string())
+            .collect()
+    };
+    let list_ids = |path: &str| -> Vec<String> {
+        ids(&client
+            .get(format!("{}{path}", server.base))
+            .bearer_auth(&token)
+            .send()
+            .unwrap()
+            .json::<serde_json::Value>()
+            .unwrap())
+    };
+
+    let archived = client
+        .post(format!("{}/api/v1/chats/{first}/archive", server.base))
+        .bearer_auth(&token)
+        .send()
+        .unwrap()
+        .error_for_status()
+        .unwrap()
+        .json::<serde_json::Value>()
+        .unwrap();
+    assert_eq!(archived["archived"], true);
+
+    assert_eq!(list_ids("/api/v1/chats/"), vec![second.clone()]);
+    assert_eq!(list_ids("/api/v1/chats/archived"), vec![first.clone()]);
+    let all_archived = client
+        .get(format!("{}/api/v1/chats/all/archived", server.base))
+        .bearer_auth(&token)
+        .send()
+        .unwrap()
+        .json::<serde_json::Value>()
+        .unwrap();
+    assert_eq!(ids(&all_archived), vec![first.clone()]);
+    assert_eq!(all_archived[0]["chat"]["title"], "archive-me");
+    assert_eq!(list_ids("/api/v1/chats/all"), vec![second.clone()]);
+
+    let unarchived = client
+        .post(format!("{}/api/v1/chats/{first}/archive", server.base))
+        .bearer_auth(&token)
+        .send()
+        .unwrap()
+        .json::<serde_json::Value>()
+        .unwrap();
+    assert_eq!(unarchived["archived"], false);
+    assert!(list_ids("/api/v1/chats/archived").is_empty());
+    assert_eq!(list_ids("/api/v1/chats/").len(), 2);
+
+    let status = client
+        .post(format!("{}/api/v1/chats/archive/all", server.base))
+        .bearer_auth(&token)
+        .send()
+        .unwrap()
+        .json::<serde_json::Value>()
+        .unwrap();
+    assert_eq!(status["status"], true);
+    assert_eq!(list_ids("/api/v1/chats/archived").len(), 2);
+    client
+        .post(format!("{}/api/v1/chats/{first}/archive", server.base))
+        .bearer_auth(&token)
+        .send()
+        .unwrap()
+        .error_for_status()
+        .unwrap();
+    assert_eq!(list_ids("/api/v1/chats/archived"), vec![second.clone()]);
+}
+
+#[test]
+fn tags_add_filter_and_remove_roundtrip() {
+    let server = spawn();
+    let token = signup(&server.base);
+    let client = reqwest::blocking::Client::new();
+    let chat = client
+        .post(format!("{}/api/v1/chats/new", server.base))
+        .bearer_auth(&token)
+        .json(&serde_json::json!({"chat":{"title":"tagged","history":{"messages":{}}}}))
+        .send()
+        .unwrap()
+        .json::<serde_json::Value>()
+        .unwrap();
+    let id = chat["id"].as_str().unwrap().to_string();
+
+    let after_add = client
+        .post(format!("{}/api/v1/chats/{id}/tags", server.base))
+        .bearer_auth(&token)
+        .json(&serde_json::json!({"name":"work"}))
+        .send()
+        .unwrap()
+        .error_for_status()
+        .unwrap()
+        .json::<serde_json::Value>()
+        .unwrap();
+    assert_eq!(after_add.as_array().unwrap().len(), 1);
+    assert_eq!(after_add[0]["name"], "work");
+
+    let filtered = client
+        .post(format!("{}/api/v1/chats/tags", server.base))
+        .bearer_auth(&token)
+        .json(&serde_json::json!({"name":"work"}))
+        .send()
+        .unwrap()
+        .error_for_status()
+        .unwrap()
+        .json::<serde_json::Value>()
+        .unwrap();
+    assert_eq!(filtered.as_array().unwrap()[0]["id"], id.as_str());
+
+    let all_tags = client
+        .get(format!("{}/api/v1/chats/all/tags", server.base))
+        .bearer_auth(&token)
+        .send()
+        .unwrap()
+        .json::<serde_json::Value>()
+        .unwrap();
+    assert_eq!(all_tags.as_array().unwrap().len(), 1);
+
+    let after_delete = client
+        .delete(format!("{}/api/v1/chats/{id}/tags", server.base))
+        .bearer_auth(&token)
+        .json(&serde_json::json!({"name":"work"}))
+        .send()
+        .unwrap()
+        .error_for_status()
+        .unwrap()
+        .json::<serde_json::Value>()
+        .unwrap();
+    assert!(after_delete.as_array().unwrap().is_empty());
+
+    let filtered = client
+        .post(format!("{}/api/v1/chats/tags", server.base))
+        .bearer_auth(&token)
+        .json(&serde_json::json!({"name":"work"}))
+        .send()
+        .unwrap()
+        .json::<serde_json::Value>()
+        .unwrap();
+    assert!(filtered.as_array().unwrap().is_empty());
+    let all_tags = client
+        .get(format!("{}/api/v1/chats/all/tags", server.base))
+        .bearer_auth(&token)
+        .send()
+        .unwrap()
+        .json::<serde_json::Value>()
+        .unwrap();
+    assert!(all_tags.as_array().unwrap().is_empty());
 }

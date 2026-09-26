@@ -17,6 +17,12 @@ import { defineConfig } from 'vite';
 
 export default defineConfig({
 	plugins: [sveltekit()],
+	// Strip leftover upstream `console.log/info/debug` from the production bundle
+	// (200+ call sites in Open WebUI components; some leak user content).
+	// warn/error stay. Template-expression logs need DEV guards (see MarkdownTokens.svelte).
+	esbuild: {
+		pure: ['console.log', 'console.info', 'console.debug']
+	},
 	define: {
 		APP_VERSION: JSON.stringify(process.env.npm_package_version),
 		APP_BUILD_HASH: JSON.stringify(process.env.APP_BUILD_HASH || 'dev-build')

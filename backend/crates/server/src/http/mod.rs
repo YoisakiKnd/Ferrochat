@@ -60,7 +60,10 @@ pub fn router() -> axum::Router<Arc<App>> {
             get(web_search_config).post(web_search_config_set),
         )
         .route("/api/v1/configs/web_search/test", post(web_search_test))
-        .route("/api/v1/audio/config", get(audio_config).post(audio_config_set))
+        .route(
+            "/api/v1/audio/config",
+            get(audio_config).post(audio_config_set),
+        )
         .route("/api/v1/audio/transcriptions", post(audio_transcriptions))
         .route("/api/v1/audio/speech", post(audio_speech))
         .route("/api/v1/usage", get(usage_summary))
@@ -84,7 +87,12 @@ pub fn router() -> axum::Router<Arc<App>> {
         .route("/api/v1/chats/new", post(new_chat))
         .route("/api/v1/chats/search", get(search_chats))
         .route("/api/v1/chats/pinned", get(pinned))
+        .route("/api/v1/chats/archived", get(archived_chats))
+        .route("/api/v1/chats/all", get(all_chats))
+        .route("/api/v1/chats/all/archived", get(all_archived_chats))
         .route("/api/v1/chats/all/tags", get(all_tags))
+        .route("/api/v1/chats/tags", post(chats_by_tag))
+        .route("/api/v1/chats/archive/all", post(archive_all_chats))
         .route("/api/v1/chats/import", post(import_chat))
         .route(
             "/api/v1/chats/{id}",
@@ -101,7 +109,7 @@ pub fn router() -> axum::Router<Arc<App>> {
         .route("/api/v1/chats/{id}/folder", post(chat_folder))
         .route(
             "/api/v1/chats/{id}/tags",
-            get(chat_tags).post(add_chat_tag).delete(noop_tags),
+            get(chat_tags).post(add_chat_tag).delete(delete_chat_tag),
         )
         .route("/api/v1/folders/", get(list_folders).post(create_folder))
         .route(
@@ -345,8 +353,15 @@ async fn chat_completions(
     user: CurrentUser,
     Json(body): Json<Value>,
 ) -> Response {
-    let direct = body.get("chat_id").and_then(|v| v.as_str()).unwrap_or("").is_empty()
-        && body.get("stream").and_then(|v| v.as_bool()).unwrap_or(false);
+    let direct = body
+        .get("chat_id")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .is_empty()
+        && body
+            .get("stream")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
     if direct {
         let (tx, rx) = tokio::sync::mpsc::channel::<String>(32);
         tokio::spawn(async move {
@@ -361,9 +376,12 @@ async fn chat_completions(
             }
         });
         let stream = futures::stream::unfold(rx, |mut rx| async move {
-            rx.recv()
-                .await
-                .map(|line| (Ok::<_, std::convert::Infallible>(bytes::Bytes::from(line)), rx))
+            rx.recv().await.map(|line| {
+                (
+                    Ok::<_, std::convert::Infallible>(bytes::Bytes::from(line)),
+                    rx,
+                )
+            })
         });
         return (
             [(header::CONTENT_TYPE, "text/event-stream")],
@@ -706,7 +724,11 @@ async fn audio_transcriptions(
             format!("multipart/form-data; boundary={boundary}"),
         )
         .body(payload);
-    if let Some(key) = cfg.get("api_key").and_then(|v| v.as_str()).filter(|s| !s.is_empty()) {
+    if let Some(key) = cfg
+        .get("api_key")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+    {
         req = req.bearer_auth(key);
     }
     match req.send().await {
@@ -755,15 +777,22 @@ async fn audio_speech(
     let mut req = client
         .post(url)
         .json(&json!({"model": model, "input": input, "voice": voice}));
-    if let Some(key) = cfg.get("api_key").and_then(|v| v.as_str()).filter(|s| !s.is_empty()) {
+    if let Some(key) = cfg
+        .get("api_key")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+    {
         req = req.bearer_auth(key);
     }
     match req.send().await {
         Ok(res) => {
-            let status = StatusCode::from_u16(res.status().as_u16()).unwrap_or(StatusCode::BAD_GATEWAY);
+            let status =
+                StatusCode::from_u16(res.status().as_u16()).unwrap_or(StatusCode::BAD_GATEWAY);
             let bytes = res.bytes().await.unwrap_or_default();
             if !status.is_success() {
-                return fail(AppError::BadRequest(String::from_utf8_lossy(&bytes).to_string()));
+                return fail(AppError::BadRequest(
+                    String::from_utf8_lossy(&bytes).to_string(),
+                ));
             }
             ([(header::CONTENT_TYPE, "audio/mpeg")], bytes).into_response()
         }

@@ -130,17 +130,42 @@ impl Db {
         .fetch_all(&self.pool)
         .await
         .map_err(internal)?;
-        Ok(rows
-            .into_iter()
-            .map(|r| {
-                json!({
-                    "id": r.get::<String, _>("id"),
-                    "title": r.get::<String, _>("title"),
-                    "updated_at": r.get::<i64, _>("updated_at"),
-                    "created_at": r.get::<i64, _>("created_at"),
-                })
-            })
-            .collect())
+        Ok(rows.into_iter().map(chat_brief).collect())
+    }
+
+    pub async fn all_chats(&self, user_id: &str, archived: bool) -> Result<Vec<Value>, AppError> {
+        let rows = sqlx::query(
+            "SELECT id, user_id, title, chat_json, created_at, updated_at, share_id, archived, pinned, meta_json, folder_id FROM chats WHERE user_id = ? AND archived = ? ORDER BY updated_at DESC",
+        )
+        .bind(user_id)
+        .bind(archived as i64)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(internal)?;
+        Ok(rows.into_iter().map(chat_json).collect())
+    }
+
+    pub async fn archived_chats(&self, user_id: &str) -> Result<Vec<Value>, AppError> {
+        let rows = sqlx::query(
+            "SELECT id, title, created_at, updated_at FROM chats WHERE user_id = ? AND archived = 1 ORDER BY updated_at DESC",
+        )
+        .bind(user_id)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(internal)?;
+        Ok(rows.into_iter().map(chat_brief).collect())
+    }
+
+    pub async fn chats_by_tag(&self, user_id: &str, name: &str) -> Result<Vec<Value>, AppError> {
+        let rows = sqlx::query(
+            "SELECT c.id, c.title, c.created_at, c.updated_at FROM chats c JOIN chat_tags ct ON ct.chat_id = c.id JOIN tags t ON t.id = ct.tag_id WHERE c.user_id = ? AND t.name = ? AND c.archived = 0 ORDER BY c.updated_at DESC",
+        )
+        .bind(user_id)
+        .bind(name)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(internal)?;
+        Ok(rows.into_iter().map(chat_brief).collect())
     }
 
     pub async fn pinned_chats(&self, user_id: &str) -> Result<Vec<Value>, AppError> {
@@ -211,6 +236,23 @@ impl Db {
             .await
             .map_err(internal)?;
         self.chat(id, user_id).await
+    }
+
+    pub async fn set_all_flag(
+        &self,
+        user_id: &str,
+        column: &str,
+        value: i64,
+    ) -> Result<u64, AppError> {
+        let sql = format!("UPDATE chats SET {column} = ?, updated_at = ? WHERE user_id = ?");
+        let r = sqlx::query(&sql)
+            .bind(value)
+            .bind(now())
+            .bind(user_id)
+            .execute(&self.pool)
+            .await
+            .map_err(internal)?;
+        Ok(r.rows_affected())
     }
 
     pub async fn set_share(
@@ -322,6 +364,31 @@ impl Db {
             .execute(&self.pool)
             .await
             .map_err(internal)?;
+        self.chat_tags(chat_id).await
+    }
+
+    pub async fn remove_tag(
+        &self,
+        user_id: &str,
+        chat_id: &str,
+        name: &str,
+    ) -> Result<Vec<Value>, AppError> {
+        sqlx::query(
+            "DELETE FROM chat_tags WHERE chat_id = ? AND tag_id = (SELECT id FROM tags WHERE user_id = ? AND name = ?)",
+        )
+        .bind(chat_id)
+        .bind(user_id)
+        .bind(name)
+        .execute(&self.pool)
+        .await
+        .map_err(internal)?;
+        sqlx::query(
+            "DELETE FROM tags WHERE user_id = ? AND id NOT IN (SELECT tag_id FROM chat_tags)",
+        )
+        .bind(user_id)
+        .execute(&self.pool)
+        .await
+        .map_err(internal)?;
         self.chat_tags(chat_id).await
     }
 
@@ -670,10 +737,7 @@ impl Db {
         Ok(rows
             .into_iter()
             .map(|row| {
-                let page = row
-                    .get::<String, _>("page")
-                    .parse::<i64>()
-                    .unwrap_or(0);
+                let page = row.get::<String, _>("page").parse::<i64>().unwrap_or(0);
                 (
                     row.get("file_id"),
                     row.get("filename"),
@@ -801,10 +865,17 @@ impl Db {
             .execute(&self.pool)
             .await
             .map_err(internal)?;
-        Ok(json!({"id": id, "user_id": user_id, "content": content, "created_at": ts, "updated_at": ts}))
+        Ok(
+            json!({"id": id, "user_id": user_id, "content": content, "created_at": ts, "updated_at": ts}),
+        )
     }
 
-    pub async fn update_memory(&self, user_id: &str, id: &str, content: &str) -> Result<Value, AppError> {
+    pub async fn update_memory(
+        &self,
+        user_id: &str,
+        id: &str,
+        content: &str,
+    ) -> Result<Value, AppError> {
         let content = content.trim();
         if content.is_empty() {
             return Err(AppError::BadRequest("content is required".into()));
@@ -840,7 +911,9 @@ impl Db {
             .fetch_one(&self.pool)
             .await
             .map_err(internal)?;
-        Ok(json!({"id": id, "user_id": user_id, "content": content, "created_at": created_at, "updated_at": ts}))
+        Ok(
+            json!({"id": id, "user_id": user_id, "content": content, "created_at": created_at, "updated_at": ts}),
+        )
     }
 
     pub async fn delete_memory(&self, user_id: &str, id: &str) -> Result<bool, AppError> {
@@ -916,6 +989,15 @@ fn memory_json(row: sqlx::sqlite::SqliteRow) -> Value {
     })
 }
 
+fn chat_brief(row: sqlx::sqlite::SqliteRow) -> Value {
+    json!({
+        "id": row.get::<String, _>("id"),
+        "title": row.get::<String, _>("title"),
+        "updated_at": row.get::<i64, _>("updated_at"),
+        "created_at": row.get::<i64, _>("created_at"),
+    })
+}
+
 fn chat_hit(row: sqlx::sqlite::SqliteRow) -> Value {
     json!({
         "id": row.get::<String, _>("id"),
@@ -939,7 +1021,10 @@ fn message_text(chat: &Value) -> String {
             push(&mut out, item);
         }
     }
-    if let Some(map) = chat.pointer("/history/messages").and_then(|v| v.as_object()) {
+    if let Some(map) = chat
+        .pointer("/history/messages")
+        .and_then(|v| v.as_object())
+    {
         for item in map.values() {
             push(&mut out, item);
         }
@@ -978,13 +1063,8 @@ impl Db {
             .map_err(internal)?;
         for row in rows {
             let chat: Value = serde_json::from_str(row.get("chat_json")).unwrap_or(json!({}));
-            self.index_chat(
-                row.get("id"),
-                row.get("user_id"),
-                row.get("title"),
-                &chat,
-            )
-            .await?;
+            self.index_chat(row.get("id"), row.get("user_id"), row.get("title"), &chat)
+                .await?;
         }
         Ok(())
     }

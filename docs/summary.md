@@ -1,6 +1,6 @@
 # Ferrochat 项目解析
 
-写于 2026-09-25。工作区里的功能还没有提交，也没有打标签。本文按当前代码说明这个仓库是什么、进程怎么起来、一次对话在后端和前端各走哪几步、数据落在哪张表、页面和接口哪些是真的、哪些只是为了不让旧前端报错。
+写于 2026-09-25，2026-09-26 补了归档/标签接口、console 剥离、CI 触发和 0.2.0 版本号这一轮。工作区里的功能还没有提交，也没有打标签。本文按当前代码说明这个仓库是什么、进程怎么起来、一次对话在后端和前端各走哪几步、数据落在哪张表、页面和接口哪些是真的、哪些只是为了不让旧前端报错。
 
 ## 1. 定位
 
@@ -29,7 +29,7 @@ llm-web/
   docs/metrics.md           体积和内存
   docs/summary.md           本文
   scripts/measure.sh
-  .github/workflows         仅 v* 标签触发
+  .github/workflows         ci：main 推送和 PR 触发；release 和镜像仅 v* 标签触发
 ```
 
 Workspace 版本 0.1.0，edition 2021。主要依赖：axum 0.8、sqlx 0.8（只要 sqlite）、reqwest（rustls）、socketioxide 0.16.2、jsonwebtoken、argon2、tokio。Release 为了体积：`opt-level = s`、`lto = fat`、`codegen-units = 1`、`panic = abort`、`strip = true`。
@@ -231,7 +231,7 @@ MCP 客户端说 JSON-RPC：`initialize`、`tools/list`、`tools/call`。传输�
 
 会话与配置：`/api/config`、`/api/version`、`/api/changelog`、`/api/v1/auths/signin|signup|signout`、个人资料和密码、用户设置、横幅、配置导入导出、webhook 读写（功能开关是关的）。
 
-对话：`/api/chat/completions`、`/api/chat/completed`、任务停止和按对话查询。`/api/v1/chats/` 列表、新建、搜索、置顶列表、全部标签、导入。单条对话有读、更新、删除、置顶、归档、克隆、分享、移动文件夹、打标签。
+对话：`/api/chat/completions`、`/api/chat/completed`、任务停止和按对话查询。`/api/v1/chats/` 分页列表（只含未归档）、`/chats/archived` 归档列表、`/chats/all` 和 `/chats/all/archived` 全量 JSON（导出用）、新建、搜索、置顶列表、按标签名筛选（`POST /chats/tags`）、一键全部归档、全部标签、导入。单条对话有读、更新、删除、置顶、归档（再点一次取消归档）、克隆、分享、移动文件夹、打标签、按名删标签。
 
 文件夹和提示词：`/api/v1/folders/` 的列表、创建、重命名。`/api/v1/prompts/` 的列表、创建、更新、删除。
 
@@ -263,22 +263,22 @@ MCP 客户端说 JSON-RPC：`initialize`、`tools/list`、`tools/call`。传输�
 | 200 条消息打开后的 JS 堆 | 未测 | 22.5 MB 已用，37.3 MB 预留 |
 | svelte-check | 406 | 293 |
 
-瘦身时删过 source map、wasm、整包 emoji。本机没有 Docker，slim 镜像没有打出来，所以没有镜像体积。README 和 CHANGELOG 的 Unreleased 仍写聊天页 3.6 MB，那是工具页那一轮结束时的数。以 `docs/metrics.md` 最后一节和上表为准。
+瘦身时删过 source map、wasm、整包 emoji。本机没有 Docker，slim 镜像没有打出来，所以没有镜像体积。README、CHANGELOG 和 `docs/metrics.md` 现在一致：聊天页首屏 0.85 MB / 42 个文件，最大块 0.41 MB。
 
-后端测试：`cargo test`。覆盖能力推断、mock 流、搜索 HTML 清洗和 SearXNG JSON、摘要复用、以及 `backend/crates/server/tests/api.rs` 里的接口（登录、聊天 JSON、视觉消息、批量加模型、工具流、用量、记忆、没有内置预设污染）。
+后端测试：`cargo test`。覆盖能力推断、mock 流、搜索 HTML 清洗和 SearXNG JSON、摘要复用、以及 `backend/crates/server/tests/api.rs` 里的接口（登录、聊天 JSON、视觉消息、批量加模型、工具流、用量、记忆、没有内置预设污染、归档往返与取消归档、标签增删与筛选）。
 
-前端：`npm run build`、`npm run check`、Playwright `frontend/e2e/smoke.spec.ts` 三条。第一条从注册走到 mock 模型并完成对话。第二条在关掉 `requestIdleCallback` 的前提下，确认 `#chat-input` 还是 `TEXTAREA` 并能发送。第三条打开工具页、快捷键、390 宽没有横向溢出。Playwright 自己拉起后端，端口默认 8091，前端用 `frontend/build`。若环境里有 `PLAYWRIGHT_BROWSERS_PATH` 指到不存在的目录，要先去掉这个变量。
+前端：`npm run build`、`npm run check`、Playwright。`frontend/e2e/smoke.spec.ts` 三条常规跑；`frontend/e2e/chats.spec.ts` 两条标题带 `@chats`，只在 v* 标签构建里跑（`--grep "@chats"`），覆盖归档列表/取消归档/一键归档和标签筛选/删除这些前端早就调用、后端过去缺路由或空实现的接口。Playwright 自己拉起后端，端口默认 8091，前端用 `frontend/build`。若环境里有 `PLAYWRIGHT_BROWSERS_PATH` 指到不存在的目录，要先去掉这个变量。
 
 本地手工看过的数据目录是 `/tmp/ferrochat-browser`，账号 `ada@ferrochat.local` / `secret1`。这不是仓库里的默认账号，只是那台机器上的浏览器数据。
 
-发布：推 `v1.2.3` 这类标签才会跑 CI 和镜像，产出 `1.2.3`、`1.2`、`latest`，架构 amd64 和 arm64。推 `main` 不会构建。镜像名 `ghcr.io/yoisakiknd/ferrochat`。`docker compose up -d` 使用它。本地构建：
+发布：推 `main` 或开 PR 跑 `ci.yml`（fmt、`cargo test`、前端构建、体积、类型基线、常规 Playwright）；推 `v*` 标签才会跑 `release.yml` 和 `docker.yml`，产出 `1.2.3`、`1.2`、`latest`，架构 amd64 和 arm64。镜像名 `ghcr.io/yoisakiknd/ferrochat`。`docker compose up -d` 使用它。本地构建：
 
 ```bash
 docker build -f docker/Dockerfile --target slim -t ferrochat .
 docker run -p 3000:8080 -v ferrochat-data:/data ferrochat
 ```
 
-升级前复制整个数据目录。GitHub Release 的二进制旁边有 `.sha256`。已发布版本是 0.1.0；联网、记忆、工具页、摘要、用量、首屏瘦身都在 CHANGELOG 的 Unreleased，还没打成新标签。
+升级前复制整个数据目录。GitHub Release 的二进制旁边有 `.sha256`。工作区版本号已升到 0.2.0（Cargo.toml、Cargo.lock、frontend/package.json），联网、记忆、工具页、摘要、用量、首屏瘦身、归档/标签接口补全都在 CHANGELOG 的 0.2.0，尚未推 `v0.2.0` 标签，所以镜像和 Release 还停在 0.1.0。
 
 本地开发：
 
@@ -300,10 +300,11 @@ cd ../backend && FERROCHAT_FRONTEND_DIR=../frontend/build cargo run --bin ferroc
 
 ## 12. 还没收口的地方
 
-- svelte-check 还有 293 条，集中在模型编辑器、输入框、单条回复、总览节点、访问控制和 `lib/utils`。目标只是降到 300 以下，没有清零。
+- svelte-check 还有 293 条，集中在模型编辑器、输入框、单条回复、总览节点、访问控制和 `lib/utils`。基线从 413 收紧到 293，2026-09-26 本机 `npx svelte-check --output machine` 实测正好 293，与基线一致。Playwright 用例没在本机跑（浏览器未安装）。
 - 200 条消息的堆内存没有在去掉深拷贝之后重测。
 - slim 镜像没有在这台机器上构建。
-- README、CHANGELOG 里的 3.6 MB 还没改成 0.85 MB。
 - 知识库命令组件还在源码里，后端没有知识库数据。
 - 能力推断靠模型名字，冷门模型会标错，需要在管理页手改。
 - 工具调用最多 5 轮，密钥出错不会在同一次生成里自动换钥匙。
+- 归档/标签接口补全、console 剥离、CI 触发扩展、迁移守卫、0.2.0 版本号已在 2026-09-26 本机实测收口：`cargo fmt --check` 干净（此前全仓从未格式化过，本次连带 `gemini.rs`/`openai.rs`/`chat.rs`/`files.rs` 等既有文件一并格式化）；`cargo test` 15 个测试 0 失败（含归档切换、标签增删两条新集成测试）；`vite build` 成功，产物中 `console.log(` 调用从源码的 479 处降到 1 处（第三方库的条件引用，非调用点）；Playwright 用例仍未在本机跑。
+- 迁移守卫核对 `migrations/` 的文件名白名单（001–005，缺文件或多文件都红）并校验每个已存在的 `.sql.sha256`。001–005 的摘要均已生成并校验通过。新增迁移时同步生成摘要并加白名单条目：`cd backend/crates/db/migrations && sha256sum <新文件>.sql | cut -d' ' -f1 > <新文件>.sql.sha256`。

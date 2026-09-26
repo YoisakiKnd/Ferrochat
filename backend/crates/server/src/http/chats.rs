@@ -153,8 +153,61 @@ pub(crate) async fn archive_chat(
     user: CurrentUser,
     Path(id): Path<String>,
 ) -> Response {
-    match app.db.set_flag(&id, &user.id, "archived", 1).await {
+    let current = app.db.chat(&id, &user.id).await.ok();
+    let next = if current
+        .as_ref()
+        .and_then(|c| c.get("archived"))
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false)
+    {
+        0
+    } else {
+        1
+    };
+    match app.db.set_flag(&id, &user.id, "archived", next).await {
         Ok(v) => ok(v),
+        Err(e) => fail(e),
+    }
+}
+pub(crate) async fn archived_chats(State(app): State<Arc<App>>, user: CurrentUser) -> Response {
+    match app.db.archived_chats(&user.id).await {
+        Ok(v) => ok(json!(v)),
+        Err(e) => fail(e),
+    }
+}
+pub(crate) async fn all_chats(State(app): State<Arc<App>>, user: CurrentUser) -> Response {
+    match app.db.all_chats(&user.id, false).await {
+        Ok(v) => ok(json!(v)),
+        Err(e) => fail(e),
+    }
+}
+pub(crate) async fn all_archived_chats(State(app): State<Arc<App>>, user: CurrentUser) -> Response {
+    match app.db.all_chats(&user.id, true).await {
+        Ok(v) => ok(json!(v)),
+        Err(e) => fail(e),
+    }
+}
+pub(crate) async fn archive_all_chats(State(app): State<Arc<App>>, user: CurrentUser) -> Response {
+    match app.db.set_all_flag(&user.id, "archived", 1).await {
+        Ok(_) => ok(json!({"status": true})),
+        Err(e) => fail(e),
+    }
+}
+#[derive(Deserialize)]
+pub(crate) struct TagNameQuery {
+    name: Option<String>,
+}
+pub(crate) async fn chats_by_tag(
+    State(app): State<Arc<App>>,
+    user: CurrentUser,
+    Json(q): Json<TagNameQuery>,
+) -> Response {
+    let name = q.name.unwrap_or_default();
+    if name.is_empty() {
+        return ok(json!([]));
+    }
+    match app.db.chats_by_tag(&user.id, &name).await {
+        Ok(v) => ok(json!(v)),
         Err(e) => fail(e),
     }
 }
@@ -216,13 +269,26 @@ pub(crate) async fn add_chat_tag(
         Err(e) => fail(e),
     }
 }
-pub(crate) async fn noop_tags(
+pub(crate) async fn delete_chat_tag(
     State(app): State<Arc<App>>,
     user: CurrentUser,
     Path(id): Path<String>,
+    body: Option<Json<Value>>,
 ) -> Response {
-    let _ = (user, id, app);
-    ok(json!([]))
+    let empty = json!({});
+    let value = match &body {
+        Some(Json(v)) => v,
+        None => &empty,
+    };
+    let key = value.get("name").or_else(|| value.get("tag"));
+    let name = key.and_then(|x| x.as_str()).unwrap_or("");
+    if name.is_empty() {
+        return ok(json!([]));
+    }
+    match app.db.remove_tag(&user.id, &id, name).await {
+        Ok(v) => ok(json!(v)),
+        Err(e) => fail(e),
+    }
 }
 
 pub(crate) async fn list_folders(State(app): State<Arc<App>>, user: CurrentUser) -> Response {

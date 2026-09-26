@@ -1,6 +1,6 @@
 {
 	"name": "ferrochat",
-	"version": "0.1.0",
+	"version": "0.2.0",
 	"private": true,
 	"scripts": {
 		"dev": "vite dev --host",
@@ -111,5 +111,8 @@
 	"engines": {
 		"node": ">=18.13.0",
 		"npm": ">=6.0.0"
+	},
+	"allowScripts": {
+		"esbuild@0.21.5": true
 	}
 }

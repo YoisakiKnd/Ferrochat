@@ -38,6 +38,13 @@
 		return 'h' + depth;
 	};
 
+	// Template expressions must be side-effect free: build-time `esbuild.pure`
+	// cannot strip a console.log embedded in markup, so keep it behind a DEV guard.
+	const debugUnknownToken = (token: Token) => {
+		console.log('Unknown token', token);
+		return null;
+	};
+
 	const exportTableToCSVHandler = (token, tokenIdx = 0) => {
 		console.log('Exporting table to CSV');
 
@@ -325,7 +332,7 @@
 		{/if}
 	{:else if token.type === 'space'}
 		<div class="my-2" />
-	{:else}
-		{console.log('Unknown token', token)}
+	{:else if import.meta.env.DEV}
+		{debugUnknownToken(token)}
 	{/if}
 {/each}

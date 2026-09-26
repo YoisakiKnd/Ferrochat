@@ -1,7 +1,12 @@
 # Changelog
 
-## Unreleased
+## 0.2.0 - 2026-09-26
 
+- Archiving a chat now toggles: a second request restores it, matching the frontend unarchive action. Added the list endpoints the frontend already called: `GET /chats/archived`, `GET /chats/all`, `GET /chats/all/archived`, `POST /chats/tags` (filter by tag), and `POST /chats/archive/all`.
+- Removing a tag from a chat deletes it. `DELETE /chats/{id}/tags` was a stub that returned an empty list and left the tag in place; it now removes the named tag and drops tags that no longer have any chat.
+- Production builds strip `console.log`, `console.info`, and `console.debug` from the bundle; `warn` and `error` stay. Template-expression logging moved behind a DEV guard.
+- CI runs on pushes to `main` and on pull requests instead of release tags only. The Playwright suite tagged `@chats` still runs only on `v*` tags, so pull requests do not need Node browser installs.
+- The migration guard checks the whole migrations directory: the file set must be exactly 001–005, and every `*.sql.sha256` digest present is verified. Digests for 002–005 still need to be generated and committed.
 - Web search (SearXNG by default, plus Tavily, Brave, Bing, Google, DuckDuckGo, and model-native search), document excerpts with page citations, and long-term memory.
 - Browser speech input and optional OpenAI-compatible transcription and speech.
 - Follow-up questions, direct text streaming for selection ask/explain, Markdown/JSON/PDF export, FTS chat search with a hit snippet, temporary chats, and quote-to-input from the selection toolbar.
@@ -15,7 +20,7 @@
 - Fixed chat updates replacing the stored chat instead of merging, which reset generated titles.
 - Removed the Connections settings tab, call mode, Valves, and knowledge/filter/action selectors.
 - Restored translations for template-string i18n keys and redrew the PNG icons.
-- Measured size: release binary 26.4 MB, idle RSS 6.5 MB, ten-stream peak 28.3 MB. Chat-page JavaScript is about 3.6 MB. The slim image was not built in this environment.
+- Measured size: release binary 26.4 MB, idle RSS 6.5 MB, ten-stream peak 28.3 MB. Chat-page first-load JavaScript is 0.85 MB across 42 files; the largest chunk is 0.41 MB because the editor is lazy-loaded. The slim image was not built in this environment.
 
 ## 0.1.0
 
