@@ -54,31 +54,46 @@ jobs:
             bin=backend/target/aarch64-unknown-linux-musl/release/ferrochat
             sha256sum "$bin" > "$bin.sha256"
             chmod a+r "$bin" "$bin.sha256"'
-      - name: checksum
-        if: ${{ !matrix.docker }}
+      - name: Package platform-specific binary and checksum
         shell: bash
         run: |
           bin=backend/target/${{ matrix.target }}/release/ferrochat${{ matrix.exe }}
-          if command -v sha256sum >/dev/null; then sha256sum "$bin" > "$bin.sha256"; else shasum -a 256 "$bin" > "$bin.sha256"; fi
+          asset=ferrochat-${{ matrix.target }}${{ matrix.exe }}
+          mkdir -p dist
+          cp "$bin" "dist/$asset"
+          cd dist
+          if command -v sha256sum >/dev/null; then sha256sum "$asset" > "$asset.sha256"; else shasum -a 256 "$asset" > "$asset.sha256"; fi
       - uses: actions/upload-artifact@v4
         with:
           name: ferrochat-${{ matrix.target }}
-          path: |
-            backend/target/${{ matrix.target }}/release/ferrochat${{ matrix.exe }}
-            backend/target/${{ matrix.target }}/release/ferrochat${{ matrix.exe }}.sha256
+          path: dist/*
   publish:
     needs: binaries
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
+      - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
         with:
           path: dist
           merge-multiple: false
+      - name: Prepare changelog release notes
+        shell: bash
+        run: |
+          python3 - "$GITHUB_REF_NAME" > release-notes.md <<'PY'
+          import pathlib, sys
+          version = sys.argv[1].removeprefix("v")
+          lines = pathlib.Path("CHANGELOG.md").read_text().splitlines()
+          start = next(i for i, line in enumerate(lines) if line.startswith(f"## {version} - "))
+          end = next((i for i in range(start + 1, len(lines)) if lines[i].startswith("## ")), len(lines))
+          print("\n".join(lines[start + 1:end]).strip())
+          PY
       - uses: softprops/action-gh-release@v2
         with:
           files: dist/**/*
+          name: ${{ github.ref_name }}
+          body_path: release-notes.md
           # Re-pointing a release tag re-runs publish against the existing
           # release; without this, uploading the same asset names fails.
           overwrite_files: true

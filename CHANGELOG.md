@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.2.2 - 2026-10-01
+
+- Hardened first-account registration, login, authenticated Socket.IO connections and administrative endpoints. Chat tasks, folders, files, prompts and document searches are scoped to their owning account.
+- Limited file and audio uploads and upstream audio responses; bounded webpage fetching and blocked private/local network targets.
+- Repaired folder creation, renaming, nesting, expansion persistence and export. Moving a chat into a folder no longer hides or duplicates it in the regular list; deleting a folder moves its chats and subfolders back to the sidebar.
+- Preserved drafts when the realtime connection is unavailable, ended pending replies on disconnect, and made Stop work even before the completion task ID arrives.
+- Fixed shared-chat URLs and anonymous access. Shared content is now a snapshot; later private messages stay private until the owner explicitly updates the link. Revocation invalidates the public link, and clipboard failures leave a manually copyable URL.
+- Restored the voice-recording button and repaired permission errors, cancellation, microphone/audio resource cleanup and transcription failures. Uploads use the recorder's actual format, and dictated text is separated from an existing draft.
+- Validated chat import files before sending them, preserved import metadata, reported partial success and server errors, and allowed retrying the same file. Password-update failures preserve inputs for retry, and upload/audio/settings failures now display their cause.
+- All 17 Playwright cases now run in regular CI. Backend tests cover access boundaries, upload/response limits and sharing migration; frontend type and ESLint error baselines were reduced to 288 and 562.
+- Release downloads now have unique platform-specific binary and checksum names so Linux and macOS builds cannot overwrite each other. GitHub release notes come from this changelog section.
+
+### Upgrade notes
+
+- Back up the data directory before upgrading. On an existing database with multiple accounts, only the earliest account can sign in.
+- Migration 006 freezes existing shared links using their content at upgrade time; it cannot reconstruct their original creation-time content. New links and explicitly updated links use snapshots.
+- Real third-party model/transcription services, real microphones and the Safari clipboard path have not been exercised by the automated browser tests.
+
 ## 0.2.1 - 2026-09-26
 
 - The web-search settings page no longer ships a real private deployment URL. The SearXNG placeholder, the help text (English plus zh-CN/zh-TW locales), and two `join_base` test assertions now use `https://searx.example.com`. Stored settings are untouched; only example strings changed.
