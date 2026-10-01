@@ -417,7 +417,7 @@ export const copyToClipboard = async (text, formatted = false) => {
 				const successful = document.execCommand('copy');
 				const msg = successful ? 'successful' : 'unsuccessful';
 				console.log('Fallback: Copying text command was ' + msg);
-				result = true;
+				result = successful;
 			} catch (err) {
 				console.error('Fallback: Oops, unable to copy', err);
 			}
@@ -567,7 +567,7 @@ export const calculateSHA256 = async (file) => {
 
 export const getImportOrigin = (_chats) => {
 	// Check what external service chat imports are from
-	if ('mapping' in _chats[0]) {
+	if (Array.isArray(_chats) && _chats[0] && typeof _chats[0] === 'object' && 'mapping' in _chats[0]) {
 		return 'openai';
 	}
 	return 'webui';

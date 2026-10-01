@@ -11,11 +11,12 @@ use axum::{
     routing::get,
     Router,
 };
-use ferrochat_core::Config;
+use ferrochat_core::{AppError, Config};
 use ferrochat_db::Db;
 use jsonwebtoken::{DecodingKey, EncodingKey};
 use rust_embed::RustEmbed;
-use socketioxide::extract::SocketRef;
+use socketioxide::extract::{Data, SocketRef};
+use socketioxide::handler::ConnectHandler;
 use socketioxide::SocketIo;
 use std::collections::HashMap;
 use std::sync::{atomic::AtomicUsize, Arc, Mutex};
@@ -28,12 +29,17 @@ use tracing_subscriber::EnvFilter;
 pub struct App {
     pub db: Db,
     pub keys: Keys,
-    pub sockets: Mutex<HashMap<String, SocketRef>>,
-    pub tasks: Mutex<HashMap<String, CancellationToken>>,
-    pub chat_tasks: Mutex<HashMap<String, Vec<String>>>,
+    pub sockets: Mutex<HashMap<String, UserSocket>>,
+    pub tasks: Mutex<HashMap<String, (String, CancellationToken)>>,
+    pub chat_tasks: Mutex<HashMap<(String, String), Vec<String>>>,
     pub key_tick: AtomicUsize,
     pub data_dir: std::path::PathBuf,
     pub frontend_dir: Option<std::path::PathBuf>,
+}
+
+pub struct UserSocket {
+    pub socket: SocketRef,
+    pub user_id: String,
 }
 
 #[derive(RustEmbed)]
@@ -78,12 +84,66 @@ async fn main() -> anyhow::Result<()> {
         frontend_dir: config.frontend_dir.clone(),
     });
     let sockets = app_state.clone();
-    io.ns("/", move |socket: SocketRef| {
-        let id = socket.id.to_string();
-        sockets.sockets.lock().unwrap().insert(id, socket.clone());
-        let _ = socket.emit("user-list", &serde_json::json!({"user_ids": []}));
-        let _ = socket.emit("usage", &serde_json::json!({"models": {}}));
-    });
+    let auth_state = app_state.clone();
+    io.ns(
+        "/",
+        (move |socket: SocketRef| {
+            let sockets = sockets.clone();
+            let id = socket.id.to_string();
+            let Some(user_id) = socket.extensions.get::<String>() else {
+                let _ = socket.disconnect();
+                return;
+            };
+            sockets.sockets.lock().unwrap().insert(
+                id,
+                UserSocket {
+                    socket: socket.clone(),
+                    user_id,
+                },
+            );
+            let cleanup_sockets = sockets.clone();
+            socket.on_disconnect(move |socket: SocketRef| {
+                let sockets = cleanup_sockets.clone();
+                async move {
+                    sockets
+                        .sockets
+                        .lock()
+                        .unwrap()
+                        .remove(&socket.id.to_string());
+                }
+            });
+            if !socket.connected() {
+                sockets
+                    .sockets
+                    .lock()
+                    .unwrap()
+                    .remove(&socket.id.to_string());
+                return;
+            }
+            let _ = socket.emit("user-list", &serde_json::json!({"user_ids": []}));
+            let _ = socket.emit("usage", &serde_json::json!({"models": {}}));
+        })
+        .with(
+            move |socket: SocketRef, Data(auth): Data<serde_json::Value>| {
+                let auth_state = auth_state.clone();
+                async move {
+                    let token = auth
+                        .get("token")
+                        .and_then(|value| value.as_str())
+                        .ok_or_else(|| AppError::Unauthorized("missing socket token".into()))?;
+                    let user_id = auth_state.keys.user_id(token)?;
+                    if !auth_state.db.is_primary_user(&user_id).await? {
+                        return Err(AppError::Unauthorized(
+                            "account is not the primary user".into(),
+                        ));
+                    }
+                    auth_state.db.user_by_id(&user_id).await?;
+                    socket.extensions.insert(user_id);
+                    Ok::<(), AppError>(())
+                }
+            },
+        ),
+    );
 
     let state = app_state.clone();
     let router = Router::new()

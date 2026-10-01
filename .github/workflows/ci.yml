@@ -36,6 +36,7 @@ jobs:
               "003_file_passages.sql",
               "004_memories.sql",
               "005_chat_search.sql",
+              "006_share_snapshot.sql",
           }
           found = {p.name for p in root.glob("*.sql")}
           if found != known:
@@ -60,29 +61,22 @@ jobs:
         working-directory: frontend
       - run: npm run build
         working-directory: frontend
+      - name: ESLint errors must not exceed baseline
+        run: npm run lint:frontend
+        working-directory: frontend
       - name: Print artifact sizes
         run: sh scripts/measure.sh
       - name: Type errors must not exceed baseline
         working-directory: frontend
-        run: |
-          count=$(npx svelte-check --output machine | awk '/COMPLETED/ {print $5}')
-          baseline=$(cat .svelte-check-baseline)
-          echo "svelte-check errors: $count (baseline $baseline)"
-          test "$count" -le "$baseline"
+        run: npm run lint:types
       - uses: dtolnay/rust-toolchain@stable
       - run: npx playwright install --with-deps chromium
         working-directory: frontend
-      - name: Playwright smoke
+      - name: Playwright suite
         working-directory: frontend
         env:
           PW_WEB_SERVER_LOGS: webserver.log
-        run: npx playwright test --grep-invert "@chats" 2>&1 | tee playwright.log; exit "${PIPESTATUS[0]}"
-      - name: Playwright chat suite (release tags only)
-        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
-        working-directory: frontend
-        env:
-          PW_WEB_SERVER_LOGS: webserver.log
-        run: npx playwright test --grep "@chats" 2>&1 | tee playwright-chats.log; exit "${PIPESTATUS[0]}"
+        run: npx playwright test 2>&1 | tee playwright.log; exit "${PIPESTATUS[0]}"
       - name: Report failure via annotation
         if: failure()
         shell: bash

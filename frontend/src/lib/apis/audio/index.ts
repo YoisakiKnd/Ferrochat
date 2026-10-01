@@ -1,9 +1,10 @@
 import { AUDIO_API_BASE_URL } from '$lib/constants';
+import { fetchResponse } from '../response';
 
 export const getAudioConfig = async (token: string) => {
 	let error = null;
 
-	const res = await fetch(`${AUDIO_API_BASE_URL}/config`, {
+	const res = await fetchResponse(`${AUDIO_API_BASE_URL}/config`, {
 		method: 'GET',
 		headers: {
 			'Content-Type': 'application/json',
@@ -16,7 +17,7 @@ export const getAudioConfig = async (token: string) => {
 		})
 		.catch((err) => {
 			console.log(err);
-			error = err.detail;
+			error = err instanceof Error ? err.message : String(err);
 			return null;
 		});
 
@@ -37,7 +38,7 @@ type OpenAIConfigForm = {
 export const updateAudioConfig = async (token: string, payload: OpenAIConfigForm) => {
 	let error = null;
 
-	const res = await fetch(`${AUDIO_API_BASE_URL}/config/update`, {
+	const res = await fetchResponse(`${AUDIO_API_BASE_URL}/config`, {
 		method: 'POST',
 		headers: {
 			'Content-Type': 'application/json',
@@ -53,7 +54,7 @@ export const updateAudioConfig = async (token: string, payload: OpenAIConfigForm
 		})
 		.catch((err) => {
 			console.log(err);
-			error = err.detail;
+			error = err instanceof Error ? err.message : String(err);
 			return null;
 		});
 
@@ -64,25 +65,26 @@ export const updateAudioConfig = async (token: string, payload: OpenAIConfigForm
 	return res;
 };
 
-export const transcribeAudio = async (token: string, file: File) => {
+export const transcribeAudio = async (token: string, file: File, signal?: AbortSignal) => {
 	const data = new FormData();
 	data.append('file', file);
 
 	let error = null;
-	const res = await fetch(`${AUDIO_API_BASE_URL}/transcriptions`, {
+	const res = await fetchResponse(`${AUDIO_API_BASE_URL}/transcriptions`, {
 		method: 'POST',
 		headers: {
 			Accept: 'application/json',
 			authorization: `Bearer ${token}`
 		},
-		body: data
+		body: data,
+		signal
 	})
 		.then(async (res) => {
 			if (!res.ok) throw await res.json();
 			return res.json();
 		})
 		.catch((err) => {
-			error = err.detail;
+			error = err instanceof Error ? err.message : String(err);
 			console.log(err);
 			return null;
 		});
@@ -102,7 +104,7 @@ export const synthesizeOpenAISpeech = async (
 ) => {
 	let error = null;
 
-	const res = await fetch(`${AUDIO_API_BASE_URL}/speech`, {
+	const res = await fetchResponse(`${AUDIO_API_BASE_URL}/speech`, {
 		method: 'POST',
 		headers: {
 			Authorization: `Bearer ${token}`,
@@ -119,7 +121,7 @@ export const synthesizeOpenAISpeech = async (
 			return res;
 		})
 		.catch((err) => {
-			error = err.detail;
+			error = err instanceof Error ? err.message : String(err);
 			console.log(err);
 
 			return null;
@@ -139,7 +141,7 @@ interface AvailableModelsResponse {
 export const getModels = async (token: string = ''): Promise<AvailableModelsResponse> => {
 	let error = null;
 
-	const res = await fetch(`${AUDIO_API_BASE_URL}/models`, {
+	const res = await fetchResponse(`${AUDIO_API_BASE_URL}/models`, {
 		method: 'GET',
 		headers: {
 			'Content-Type': 'application/json',
@@ -151,7 +153,7 @@ export const getModels = async (token: string = ''): Promise<AvailableModelsResp
 			return res.json();
 		})
 		.catch((err) => {
-			error = err.detail;
+			error = err instanceof Error ? err.message : String(err);
 			console.log(err);
 
 			return null;
@@ -167,7 +169,7 @@ export const getModels = async (token: string = ''): Promise<AvailableModelsResp
 export const getVoices = async (token: string = '') => {
 	let error = null;
 
-	const res = await fetch(`${AUDIO_API_BASE_URL}/voices`, {
+	const res = await fetchResponse(`${AUDIO_API_BASE_URL}/voices`, {
 		method: 'GET',
 		headers: {
 			'Content-Type': 'application/json',
@@ -179,7 +181,7 @@ export const getVoices = async (token: string = '') => {
 			return res.json();
 		})
 		.catch((err) => {
-			error = err.detail;
+			error = err instanceof Error ? err.message : String(err);
 			console.log(err);
 
 			return null;

@@ -12,6 +12,220 @@ pub struct Db {
     pub pool: SqlitePool,
 }
 
+#[cfg(test)]
+mod access_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn legacy_share_links_are_snapshotted_during_upgrade() {
+        let dir = std::env::temp_dir().join(format!("ferrochat-share-test-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let url = format!("sqlite:{}?mode=rwc", dir.join("test.db").display());
+        let db = Db::connect(&url).await.unwrap();
+        let user = db
+            .insert_first_user("share@example.com", "Share", "hash", "admin")
+            .await
+            .unwrap();
+        let user_id = user["id"].as_str().unwrap();
+        let chat = db
+            .insert_chat(
+                user_id,
+                &json!({"title":"Before upgrade","messages":[]}),
+                &json!({}),
+                false,
+                None,
+            )
+            .await
+            .unwrap();
+        let chat_id = chat["id"].as_str().unwrap();
+        sqlx::query("UPDATE chats SET share_id = 'legacy-link' WHERE id = ?")
+            .bind(chat_id)
+            .execute(&db.pool)
+            .await
+            .unwrap();
+        sqlx::query("ALTER TABLE chats DROP COLUMN shared_chat_json")
+            .execute(&db.pool)
+            .await
+            .unwrap();
+        db.pool.close().await;
+        let upgraded = Db::connect(&url).await.unwrap();
+        upgraded
+            .update_chat(chat_id, user_id, &json!({"title":"After upgrade"}))
+            .await
+            .unwrap();
+        assert_eq!(
+            upgraded.chat_by_share("legacy-link").await.unwrap()["title"],
+            "Before upgrade"
+        );
+        upgraded.pool.close().await;
+        let reopened = Db::connect(&url).await.unwrap();
+        assert_eq!(
+            reopened.chat_by_share("legacy-link").await.unwrap()["title"],
+            "Before upgrade"
+        );
+        reopened.pool.close().await;
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn first_user_and_file_passages_are_user_scoped() {
+        let dir = std::env::temp_dir().join(format!("ferrochat-db-test-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let url = format!("sqlite:{}?mode=rwc", dir.join("test.db").display());
+        let db = Db::connect(&url).await.unwrap();
+        let first = db
+            .insert_first_user("first@example.com", "First", "hash", "admin")
+            .await
+            .unwrap();
+        assert!(db
+            .insert_first_user("second@example.com", "Second", "hash", "admin")
+            .await
+            .is_err());
+        let first_id = first["id"].as_str().unwrap();
+        let second_id = Uuid::new_v4().to_string();
+        sqlx::query("INSERT INTO users (id, email, name, password_hash, role, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)")
+            .bind(&second_id).bind("second@example.com").bind("Second").bind("hash").bind("user")
+            .bind(now()).bind(now()).execute(&db.pool).await.unwrap();
+        assert!(db.is_primary_user(first_id).await.unwrap());
+        assert!(!db.is_primary_user(&second_id).await.unwrap());
+        let chat = db
+            .insert_chat(
+                first_id,
+                &json!({"title":"Original"}),
+                &json!({}),
+                false,
+                None,
+            )
+            .await
+            .unwrap();
+        let chat_id = chat["id"].as_str().unwrap();
+        db.set_chat_title(chat_id, &second_id, "Foreign")
+            .await
+            .unwrap();
+        assert_eq!(
+            db.chat(chat_id, first_id).await.unwrap()["title"],
+            "Original"
+        );
+        assert!(db.add_tag(&second_id, chat_id, "foreign").await.is_err());
+        let file = db
+            .insert_file(first_id, "note.txt", "/tmp/note.txt", &json!({}))
+            .await
+            .unwrap();
+        let file_id = file["id"].as_str().unwrap().to_string();
+        assert!(db.file_path(&file_id, &second_id).await.is_err());
+        db.replace_passages(&file_id, "note.txt", &[(0, "secret body".into())])
+            .await
+            .unwrap();
+        assert!(db
+            .search_passages(&second_id, &[file_id.clone()], "", 6)
+            .await
+            .unwrap()
+            .is_empty());
+        assert_eq!(
+            db.search_passages(first_id, &[file_id.clone()], "", 6)
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
+        assert!(db
+            .search_passages(&second_id, &[file_id.clone()], "secret", 6)
+            .await
+            .unwrap()
+            .is_empty());
+        assert_eq!(
+            db.search_passages(first_id, &[file_id], "secret", 6)
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
+        let folder = db.create_folder(first_id, "Private", None).await.unwrap();
+        let folder_id = folder["id"].as_str().unwrap();
+        assert!(db.folder(folder_id, &second_id).await.is_err());
+        assert!(db
+            .update_folder_name(folder_id, &second_id, "Changed")
+            .await
+            .is_err());
+        assert_eq!(
+            db.folder(folder_id, first_id).await.unwrap()["name"],
+            "Private"
+        );
+        let second_chat = db
+            .insert_chat(
+                &second_id,
+                &json!({"title":"Second"}),
+                &json!({}),
+                false,
+                None,
+            )
+            .await
+            .unwrap();
+        assert!(db
+            .set_folder(
+                second_chat["id"].as_str().unwrap(),
+                &second_id,
+                Some(folder_id)
+            )
+            .await
+            .is_err());
+        assert!(db
+            .insert_chat(&second_id, &json!({}), &json!({}), false, Some(folder_id))
+            .await
+            .is_err());
+        assert!(db
+            .set_folder_expanded(folder_id, &second_id, true)
+            .await
+            .is_err());
+        assert!(db
+            .create_folder(&second_id, "Foreign child", Some(folder_id))
+            .await
+            .is_err());
+        let child = db
+            .create_folder(first_id, "Child", Some(folder_id))
+            .await
+            .unwrap();
+        let child_id = child["id"].as_str().unwrap();
+        assert!(db
+            .set_folder_parent(folder_id, first_id, Some(child_id))
+            .await
+            .is_err());
+        db.set_folder_expanded(folder_id, first_id, true)
+            .await
+            .unwrap();
+        db.set_folder(chat_id, first_id, Some(folder_id))
+            .await
+            .unwrap();
+        let folders = db.list_folders(first_id).await.unwrap();
+        let populated = folders
+            .iter()
+            .find(|folder| folder["id"] == folder_id)
+            .unwrap();
+        assert_eq!(populated["items"]["chats"][0]["id"], chat_id);
+        assert_eq!(populated["is_expanded"], true);
+        assert!(db.list_chats(first_id, 1, false).await.unwrap().is_empty());
+        db.delete_folder(folder_id, first_id).await.unwrap();
+        assert!(db.folder(child_id, first_id).await.unwrap()["parent_id"].is_null());
+        assert!(db.chat(chat_id, first_id).await.unwrap()["folder_id"].is_null());
+        assert_eq!(db.list_chats(first_id, 1, false).await.unwrap().len(), 1);
+
+        db.upsert_prompt(first_id, "/private", "Original", "secret")
+            .await
+            .unwrap();
+        assert!(db
+            .upsert_prompt(&second_id, "/private", "Changed", "leak")
+            .await
+            .is_err());
+        assert!(!db.delete_prompt("/private", &second_id).await.unwrap());
+        assert_eq!(
+            db.list_prompts(first_id).await.unwrap()[0]["content"],
+            "secret"
+        );
+        drop(db);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+}
+
 impl Db {
     pub async fn connect(url: &str) -> Result<Self, AppError> {
         let opts = SqliteConnectOptions::from_str(url)
@@ -45,7 +259,16 @@ impl Db {
         Ok(n.0)
     }
 
-    pub async fn insert_user(
+    pub async fn is_primary_user(&self, id: &str) -> Result<bool, AppError> {
+        let primary: Option<String> =
+            sqlx::query_scalar("SELECT id FROM users ORDER BY created_at ASC, rowid ASC LIMIT 1")
+                .fetch_optional(&self.pool)
+                .await
+                .map_err(internal)?;
+        Ok(primary.as_deref() == Some(id))
+    }
+
+    pub async fn insert_first_user(
         &self,
         email: &str,
         name: &str,
@@ -54,8 +277,8 @@ impl Db {
     ) -> Result<Value, AppError> {
         let id = Uuid::new_v4().to_string();
         let ts = now();
-        sqlx::query(
-            "INSERT INTO users (id, email, name, password_hash, role, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        let inserted = sqlx::query(
+            "INSERT INTO users (id, email, name, password_hash, role, created_at, updated_at) SELECT ?, ?, ?, ?, ?, ?, ? WHERE NOT EXISTS (SELECT 1 FROM users)",
         )
         .bind(&id)
         .bind(email)
@@ -67,6 +290,9 @@ impl Db {
         .execute(&self.pool)
         .await
         .map_err(internal)?;
+        if inserted.rows_affected() == 0 {
+            return Err(AppError::BadRequest("signup is closed".into()));
+        }
         self.user_by_id(&id).await
     }
 
@@ -694,6 +920,20 @@ impl Db {
                 .await
                 .map_err(internal)?;
             self.reindex_chats().await?;
+        }
+        let has_shared_snapshot: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM pragma_table_info('chats') WHERE name = 'shared_chat_json'",
+        )
+        .fetch_one(&self.pool)
+        .await
+        .map_err(internal)?;
+        if has_shared_snapshot == 0 {
+            let mut tx = self.pool.begin().await.map_err(internal)?;
+            sqlx::raw_sql(include_str!("../migrations/006_share_snapshot.sql"))
+                .execute(&mut *tx)
+                .await
+                .map_err(internal)?;
+            tx.commit().await.map_err(internal)?;
         }
         self.remove_builtin_presets().await?;
         Ok(())

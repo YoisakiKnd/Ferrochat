@@ -24,6 +24,7 @@
 		isLastActiveTab,
 		isApp,
 		appInfo,
+		appData,
 		toolServers
 	} from '$lib/stores';
 	import { goto } from '$app/navigation';
@@ -62,6 +63,7 @@
 			randomizationFactor: 0.5,
 			path: '/ws/socket.io',
 			transports: enableWebsocket ? ['websocket'] : ['polling', 'websocket'],
+			autoConnect: !!localStorage.token,
 			auth: { token: localStorage.token }
 		});
 
@@ -441,6 +443,7 @@
 
 				const currentUrl = `${window.location.pathname}${window.location.search}`;
 				const encodedUrl = encodeURIComponent(currentUrl);
+				const publicPage = $page.url.pathname.startsWith('/s/');
 
 				if (localStorage.token) {
 					// Get Session User Info
@@ -458,12 +461,12 @@
 					} else {
 						// Redirect Invalid Session User to /auth Page
 						localStorage.removeItem('token');
-						await goto(`/auth?redirect=${encodedUrl}`);
+						if (!publicPage) await goto(`/auth?redirect=${encodedUrl}`);
 					}
 				} else {
 					// Don't redirect if we're already on the auth page
 					// Needed because we pass in tokens from OAuth logins via URL fragments
-					if ($page.url.pathname !== '/auth') {
+					if ($page.url.pathname !== '/auth' && !publicPage) {
 						await goto(`/auth?redirect=${encodedUrl}`);
 					}
 				}

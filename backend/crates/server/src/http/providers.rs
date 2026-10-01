@@ -1,4 +1,4 @@
-use super::{fail, ok};
+use super::{fail, ok, require_admin};
 use crate::auth::CurrentUser;
 use crate::App;
 use axum::{
@@ -13,7 +13,9 @@ use serde_json::{json, Value};
 use std::sync::Arc;
 
 pub(crate) async fn list_providers(State(app): State<Arc<App>>, user: CurrentUser) -> Response {
-    let _ = user;
+    if let Err(err) = require_admin(&user) {
+        return fail(err);
+    }
     match app.db.list_providers().await {
         Ok(v) => ok(json!(v)),
         Err(e) => fail(e),
@@ -24,7 +26,9 @@ pub(crate) async fn upsert_provider(
     user: CurrentUser,
     Json(body): Json<Value>,
 ) -> Response {
-    let _ = user;
+    if let Err(err) = require_admin(&user) {
+        return fail(err);
+    }
     match app.db.upsert_provider(&body).await {
         Ok(v) => ok(v),
         Err(e) => fail(e),
@@ -35,7 +39,9 @@ pub(crate) async fn get_provider(
     user: CurrentUser,
     Path(id): Path<String>,
 ) -> Response {
-    let _ = user;
+    if let Err(err) = require_admin(&user) {
+        return fail(err);
+    }
     match app.db.provider(&id).await {
         Ok(v) => ok(v),
         Err(e) => fail(e),
@@ -46,7 +52,9 @@ pub(crate) async fn delete_provider(
     user: CurrentUser,
     Path(id): Path<String>,
 ) -> Response {
-    let _ = user;
+    if let Err(err) = require_admin(&user) {
+        return fail(err);
+    }
     match app.db.delete_provider(&id).await {
         Ok(()) => ok(json!(true)),
         Err(e) => fail(e),
@@ -57,7 +65,9 @@ pub(crate) async fn provider_models(
     user: CurrentUser,
     Path(id): Path<String>,
 ) -> Response {
-    let _ = user;
+    if let Err(err) = require_admin(&user) {
+        return fail(err);
+    }
     match app.db.list_provider_models(&id).await {
         Ok(v) => ok(json!(v)),
         Err(e) => fail(e),
@@ -69,7 +79,9 @@ pub(crate) async fn add_provider_model(
     Path(id): Path<String>,
     Json(body): Json<Value>,
 ) -> Response {
-    let _ = user;
+    if let Err(err) = require_admin(&user) {
+        return fail(err);
+    }
     let model_id = body.get("model_id").and_then(|v| v.as_str()).unwrap_or("");
     let name = body
         .get("name")
@@ -90,7 +102,9 @@ pub(crate) async fn add_provider_models_batch(
     Path(id): Path<String>,
     Json(body): Json<Value>,
 ) -> Response {
-    let _ = user;
+    if let Err(err) = require_admin(&user) {
+        return fail(err);
+    }
     let list = body
         .get("models")
         .and_then(|v| v.as_array())
@@ -118,7 +132,9 @@ pub(crate) async fn add_provider_models_batch(
     ok(json!(added))
 }
 pub(crate) async fn managed_models(State(app): State<Arc<App>>, user: CurrentUser) -> Response {
-    let _ = user;
+    if let Err(err) = require_admin(&user) {
+        return fail(err);
+    }
     let default_model = app
         .db
         .config_get("default_models")
@@ -136,7 +152,9 @@ pub(crate) async fn reorder_models(
     user: CurrentUser,
     Json(body): Json<Value>,
 ) -> Response {
-    let _ = user;
+    if let Err(err) = require_admin(&user) {
+        return fail(err);
+    }
     let ids: Vec<String> = body
         .get("ids")
         .and_then(|v| v.as_array())
@@ -156,7 +174,9 @@ pub(crate) async fn set_default_model(
     user: CurrentUser,
     Json(body): Json<Value>,
 ) -> Response {
-    let _ = user;
+    if let Err(err) = require_admin(&user) {
+        return fail(err);
+    }
     let value = body.get("default_model").cloned().unwrap_or(json!(""));
     match app.db.config_set("default_models", &value).await {
         Ok(()) => ok(json!({ "default_model": value })),
@@ -169,7 +189,9 @@ pub(crate) async fn patch_provider_model(
     Path((id, model_id)): Path<(String, String)>,
     Json(body): Json<Value>,
 ) -> Response {
-    let _ = user;
+    if let Err(err) = require_admin(&user) {
+        return fail(err);
+    }
     let key = if model_id.contains(':') {
         model_id
     } else {
@@ -185,7 +207,9 @@ pub(crate) async fn provider_keys(
     user: CurrentUser,
     Path(id): Path<String>,
 ) -> Response {
-    let _ = user;
+    if let Err(err) = require_admin(&user) {
+        return fail(err);
+    }
     match app.db.key_health(&id).await {
         Ok(v) => ok(json!(v)),
         Err(e) => fail(e),
@@ -196,7 +220,9 @@ pub(crate) async fn export_providers(
     user: CurrentUser,
     Query(q): Query<ExportQuery>,
 ) -> Response {
-    let _ = user;
+    if let Err(err) = require_admin(&user) {
+        return fail(err);
+    }
     match app.db.list_providers().await {
         Ok(mut providers) => {
             if !q.include_keys.unwrap_or(false) {
@@ -220,7 +246,9 @@ pub(crate) async fn import_providers(
     user: CurrentUser,
     Json(body): Json<Value>,
 ) -> Response {
-    let _ = user;
+    if let Err(err) = require_admin(&user) {
+        return fail(err);
+    }
     let list = body
         .get("providers")
         .and_then(|v| v.as_array())
@@ -240,7 +268,9 @@ pub(crate) async fn delete_provider_model(
     user: CurrentUser,
     Path((id, model_id)): Path<(String, String)>,
 ) -> Response {
-    let _ = user;
+    if let Err(err) = require_admin(&user) {
+        return fail(err);
+    }
     let key = if model_id.contains(':') {
         model_id
     } else {
@@ -268,7 +298,9 @@ pub(crate) async fn remote_models(
     user: CurrentUser,
     Path(id): Path<String>,
 ) -> Response {
-    let _ = user;
+    if let Err(err) = require_admin(&user) {
+        return fail(err);
+    }
     let provider = match app.db.provider(&id).await {
         Ok(v) => v,
         Err(e) => return fail(e),
@@ -284,7 +316,9 @@ pub(crate) async fn check_provider(
     Path(id): Path<String>,
     Json(body): Json<Value>,
 ) -> Response {
-    let _ = user;
+    if let Err(err) = require_admin(&user) {
+        return fail(err);
+    }
     let provider = match app.db.provider(&id).await {
         Ok(v) => v,
         Err(e) => return fail(e),

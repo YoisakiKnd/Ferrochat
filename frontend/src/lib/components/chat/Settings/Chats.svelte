@@ -6,12 +6,13 @@
 
 	import {
 		archiveAllChats,
-		createNewChat,
+		importChat,
 		deleteAllChats,
 		getAllChats,
 		getAllUserChats,
 		getChatList
 	} from '$lib/apis/chats';
+	import { normalizeChatImports } from '$lib/utils/chat-import';
 	import { getImportOrigin, convertOpenAIChats } from '$lib/utils';
 	import { onMount, getContext } from 'svelte';
 	import { goto } from '$app/navigation';
@@ -31,43 +32,45 @@
 
 	let chatImportInputElement: HTMLInputElement;
 
-	$: if (importFiles) {
-		console.log(importFiles);
-
-		let reader = new FileReader();
-		reader.onload = (event) => {
-			let chats = JSON.parse(event.target.result);
-			console.log(chats);
-			if (getImportOrigin(chats) == 'openai') {
-				try {
-					chats = convertOpenAIChats(chats);
-				} catch (error) {
-					console.log('Unable to import chats:', error);
-				}
+	let importing = false;
+	const importFile = async (file: File) => {
+		if (importing) return;
+		importing = true;
+		let imported = 0;
+		try {
+			let entries = JSON.parse(await file.text());
+			if (!Array.isArray(entries) || entries.length === 0) throw new Error('Invalid file format.');
+			if (getImportOrigin(entries) === 'openai') entries = convertOpenAIChats(entries);
+			for (const item of normalizeChatImports(entries)) {
+				await importChat(localStorage.token, item.chat, item.meta, item.pinned);
+				imported++;
 			}
-			importChats(chats);
-		};
-
-		if (importFiles.length > 0) {
-			reader.readAsText(importFiles[0]);
+			toast.success($i18n.t('Imported {{COUNT}} chats.', { COUNT: imported }));
+		} catch (error) {
+			const message =
+				error instanceof SyntaxError
+					? 'Invalid file format.'
+					: error instanceof Error
+						? error.message
+						: String(error);
+			toast.error(
+				imported
+					? $i18n.t('Imported {{COUNT}} chats before the error: {{ERROR}}', {
+							COUNT: imported,
+							ERROR: message
+						})
+					: $i18n.t(message)
+			);
+		} finally {
+			importing = false;
+			importFiles = null;
+			chatImportInputElement.value = '';
+			currentChatPage.set(1);
+			await chats.set(await getChatList(localStorage.token, $currentChatPage));
+			scrollPaginationEnabled.set(true);
 		}
-	}
-
-	const importChats = async (_chats) => {
-		for (const chat of _chats) {
-			console.log(chat);
-
-			if (chat.chat) {
-				await createNewChat(localStorage.token, chat.chat);
-			} else {
-				await createNewChat(localStorage.token, chat);
-			}
-		}
-
-		currentChatPage.set(1);
-		await chats.set(await getChatList(localStorage.token, $currentChatPage));
-		scrollPaginationEnabled.set(true);
 	};
+	$: if (importFiles?.length) importFile(importFiles[0]);
 
 	const exportChats = async () => {
 		let blob = new Blob([JSON.stringify(await getAllChats(localStorage.token))], {
@@ -121,7 +124,7 @@
 			<button
 				class=" flex rounded-md py-2 px-3.5 w-full hover:bg-gray-200 dark:hover:bg-gray-800 transition"
 				on:click={() => {
-					chatImportInputElement.click();
+					if (!importing) chatImportInputElement.click();
 				}}
 			>
 				<div class=" self-center mr-3">

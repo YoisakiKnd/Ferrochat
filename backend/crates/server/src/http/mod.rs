@@ -1,7 +1,7 @@
 use crate::auth::{self, CurrentUser};
 use crate::App;
 use axum::{
-    extract::{Multipart, Path, Query, State},
+    extract::{DefaultBodyLimit, Multipart, Path, Query, State},
     http::{header, HeaderMap, StatusCode},
     response::{IntoResponse, Response},
     Json,
@@ -18,6 +18,10 @@ mod providers;
 use chats::*;
 use files::*;
 use providers::*;
+
+const MAX_AUDIO_UPLOAD_BYTES: usize = 20 * 1024 * 1024;
+const MAX_AUDIO_RESPONSE_BYTES: usize = 20 * 1024 * 1024;
+const MAX_TRANSCRIPTION_RESPONSE_BYTES: usize = 1024 * 1024;
 
 pub fn router() -> axum::Router<Arc<App>> {
     use axum::routing::{delete, get, post};
@@ -64,7 +68,11 @@ pub fn router() -> axum::Router<Arc<App>> {
             "/api/v1/audio/config",
             get(audio_config).post(audio_config_set),
         )
-        .route("/api/v1/audio/transcriptions", post(audio_transcriptions))
+        .route(
+            "/api/v1/audio/transcriptions",
+            post(audio_transcriptions)
+                .layer(DefaultBodyLimit::max(MAX_AUDIO_UPLOAD_BYTES + 64 * 1024)),
+        )
         .route("/api/v1/audio/speech", post(audio_speech))
         .route("/api/v1/usage", get(usage_summary))
         .route("/api/v1/channels/", get(empty_list))
@@ -94,6 +102,7 @@ pub fn router() -> axum::Router<Arc<App>> {
         .route("/api/v1/chats/tags", post(chats_by_tag))
         .route("/api/v1/chats/archive/all", post(archive_all_chats))
         .route("/api/v1/chats/import", post(import_chat))
+        .route("/api/v1/chats/folder/{id}", get(folder_chats))
         .route(
             "/api/v1/chats/{id}",
             get(get_chat).post(update_chat).delete(delete_chat),
@@ -117,6 +126,8 @@ pub fn router() -> axum::Router<Arc<App>> {
             get(get_folder).delete(delete_folder),
         )
         .route("/api/v1/folders/{id}/update", post(rename_folder))
+        .route("/api/v1/folders/{id}/update/expanded", post(expand_folder))
+        .route("/api/v1/folders/{id}/update/parent", post(move_folder))
         .route("/api/v1/prompts/", get(list_prompts))
         .route("/api/v1/prompts/list", get(list_prompts))
         .route("/api/v1/groups/", get(empty_list))
@@ -174,7 +185,10 @@ pub fn router() -> axum::Router<Arc<App>> {
         .route("/api/v1/providers/{id}/keys", get(provider_keys))
         .route("/api/v1/providers/export", get(export_providers))
         .route("/api/v1/providers/import", post(import_providers))
-        .route("/api/v1/files/", post(upload_file))
+        .route(
+            "/api/v1/files/",
+            post(upload_file).layer(DefaultBodyLimit::max(MAX_UPLOAD_BYTES + 64 * 1024)),
+        )
         .route("/api/v1/files/{id}/content", get(file_content))
         .route(
             "/api/v1/tasks/config",
@@ -253,7 +267,7 @@ async fn config(State(app): State<Arc<App>>, headers: HeaderMap) -> Response {
             perms["features"]["web_search"] = json!(true);
         }
         body["permissions"] = perms;
-        body["file"] = json!({"max_size": 10_000_000, "max_count": 5});
+        body["file"] = json!({"max_size": MAX_UPLOAD_MB, "max_count": 5});
         let audio_cfg = app
             .db
             .config_get("audio")
@@ -298,6 +312,11 @@ async fn session_user(app: &App, headers: &HeaderMap) -> Result<CurrentUser, App
         })
         .ok_or_else(|| AppError::Unauthorized("not authenticated".into()))?;
     let id = app.keys.user_id(&token)?;
+    if !app.db.is_primary_user(&id).await? {
+        return Err(AppError::Unauthorized(
+            "account is not the primary user".into(),
+        ));
+    }
     let value = app.db.user_by_id(&id).await?;
     Ok(CurrentUser {
         id: value["id"].as_str().unwrap_or_default().to_string(),
@@ -403,8 +422,10 @@ async fn stop_task(
     user: CurrentUser,
     Path(id): Path<String>,
 ) -> Response {
-    let _ = user;
-    if let Some(token) = app.tasks.lock().unwrap().get(&id) {
+    if let Some((owner, token)) = app.tasks.lock().unwrap().get(&id) {
+        if owner != &user.id {
+            return fail(AppError::NotFound("task not found".into()));
+        }
         token.cancel();
     }
     ok(json!({"status": true}))
@@ -414,12 +435,11 @@ async fn chat_tasks(
     user: CurrentUser,
     Path(chat_id): Path<String>,
 ) -> Response {
-    let _ = user;
     let ids = app
         .chat_tasks
         .lock()
         .unwrap()
-        .get(&chat_id)
+        .get(&(user.id, chat_id))
         .cloned()
         .unwrap_or_default();
     ok(json!({"task_ids": ids}))
@@ -458,6 +478,9 @@ async fn signin(State(app): State<Arc<App>>, Json(body): Json<Value>) -> Respons
     let Some(row) = app.db.user_by_email(email).await.unwrap_or(None) else {
         return fail(AppError::BadRequest("invalid credentials".into()));
     };
+    if !app.db.is_primary_user(&row.id).await.unwrap_or(false) {
+        return fail(AppError::BadRequest("invalid credentials".into()));
+    }
     if !auth::verify_password(password, &row.password_hash) {
         return fail(AppError::BadRequest("invalid credentials".into()));
     }
@@ -490,7 +513,7 @@ async fn signup(State(app): State<Arc<App>>, Json(body): Json<Value>) -> Respons
         Ok(h) => h,
         Err(e) => return fail(e),
     };
-    let created = match app.db.insert_user(email, name, &hash, "admin").await {
+    let created = match app.db.insert_first_user(email, name, &hash, "admin").await {
         Ok(v) => v,
         Err(e) => return fail(e),
     };
@@ -685,14 +708,27 @@ async fn audio_transcriptions(
     let mut bytes = None;
     let mut filename = "audio.webm".to_string();
     let mut mime = "application/octet-stream".to_string();
-    while let Ok(Some(field)) = multipart.next_field().await {
+    while let Ok(Some(mut field)) = multipart.next_field().await {
         if field.name() == Some("file") {
             filename = field.file_name().unwrap_or("audio.webm").to_string();
             mime = field
                 .content_type()
                 .unwrap_or("application/octet-stream")
                 .to_string();
-            bytes = field.bytes().await.ok();
+            let mut upload = Vec::new();
+            loop {
+                match field.chunk().await {
+                    Ok(Some(chunk)) => {
+                        if chunk.len() > MAX_AUDIO_UPLOAD_BYTES.saturating_sub(upload.len()) {
+                            return fail(AppError::BadRequest("audio exceeds 20 MiB limit".into()));
+                        }
+                        upload.extend_from_slice(&chunk);
+                    }
+                    Ok(None) => break,
+                    Err(err) => return fail(AppError::BadRequest(err.to_string())),
+                }
+            }
+            bytes = Some(upload);
         }
     }
     let Some(bytes) = bytes else {
@@ -734,13 +770,17 @@ async fn audio_transcriptions(
     match req.send().await {
         Ok(res) => {
             let status = res.status();
-            let text = res.text().await.unwrap_or_default();
+            let bytes = match read_bounded_response(res, MAX_TRANSCRIPTION_RESPONSE_BYTES).await {
+                Ok(bytes) => bytes,
+                Err(err) => return fail(err),
+            };
+            let text = String::from_utf8_lossy(&bytes);
             if !status.is_success() {
-                return fail(AppError::BadRequest(text));
+                return fail(AppError::BadRequest(text.into_owned()));
             }
             match serde_json::from_str::<Value>(&text) {
                 Ok(value) => ok(value),
-                Err(_) => ok(json!({"text": text})),
+                Err(_) => ok(json!({"text": text.as_ref()})),
             }
         }
         Err(err) => fail(AppError::BadRequest(err.to_string())),
@@ -788,7 +828,10 @@ async fn audio_speech(
         Ok(res) => {
             let status =
                 StatusCode::from_u16(res.status().as_u16()).unwrap_or(StatusCode::BAD_GATEWAY);
-            let bytes = res.bytes().await.unwrap_or_default();
+            let bytes = match read_bounded_response(res, MAX_AUDIO_RESPONSE_BYTES).await {
+                Ok(bytes) => bytes,
+                Err(err) => return fail(err),
+            };
             if !status.is_success() {
                 return fail(AppError::BadRequest(
                     String::from_utf8_lossy(&bytes).to_string(),
@@ -798,6 +841,26 @@ async fn audio_speech(
         }
         Err(err) => fail(AppError::BadRequest(err.to_string())),
     }
+}
+
+async fn read_bounded_response(
+    mut response: reqwest::Response,
+    limit: usize,
+) -> Result<Vec<u8>, AppError> {
+    let mut bytes = Vec::new();
+    while let Some(chunk) = response
+        .chunk()
+        .await
+        .map_err(|err| AppError::Internal(err.to_string()))?
+    {
+        if chunk.len() > limit.saturating_sub(bytes.len()) {
+            return Err(AppError::Internal(
+                "audio service response exceeds limit".into(),
+            ));
+        }
+        bytes.extend_from_slice(&chunk);
+    }
+    Ok(bytes)
 }
 
 async fn usage_summary(State(app): State<Arc<App>>, user: CurrentUser) -> Response {
@@ -811,11 +874,15 @@ async fn usage_summary(State(app): State<Arc<App>>, user: CurrentUser) -> Respon
 }
 
 async fn admin_config(user: CurrentUser) -> Response {
-    let _ = user;
+    if let Err(err) = require_admin(&user) {
+        return fail(err);
+    }
     ok(json!({"SHOW_ADMIN_DETAILS": true, "ENABLE_SIGNUP": false, "DEFAULT_USER_ROLE": "admin"}))
 }
 async fn admin_config_set(user: CurrentUser, Json(body): Json<Value>) -> Response {
-    let _ = user;
+    if let Err(err) = require_admin(&user) {
+        return fail(err);
+    }
     ok(body)
 }
 async fn list_memories(State(app): State<Arc<App>>, user: CurrentUser) -> Response {
@@ -912,7 +979,9 @@ async fn empty_object(user: CurrentUser) -> Response {
 }
 
 async fn admin_details(State(app): State<Arc<App>>, user: CurrentUser) -> Response {
-    let _ = user;
+    if let Err(err) = require_admin(&user) {
+        return fail(err);
+    }
     let count = app.db.user_count().await.unwrap_or(0);
     ok(json!({"name": "Ferrochat", "version": VERSION, "user_count": count}))
 }
@@ -940,17 +1009,29 @@ async fn update_password(
     user: CurrentUser,
     Json(body): Json<Value>,
 ) -> Response {
-    let password = body.get("password").and_then(|v| v.as_str()).unwrap_or("");
     let current = body
         .get("current_password")
         .or_else(|| body.get("password"))
         .and_then(|v| v.as_str())
-        .unwrap_or(password);
+        .unwrap_or("");
+    let password = body
+        .get("new_password")
+        .or_else(|| {
+            body.get("current_password")
+                .and_then(|_| body.get("password"))
+        })
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    if password.len() < 6 {
+        return fail(AppError::BadRequest(
+            "new password must be at least 6 characters".into(),
+        ));
+    }
     let hash = match app.db.password_hash(&user.id).await {
         Ok(h) => h,
         Err(e) => return fail(e),
     };
-    if body.get("current_password").is_some() && !auth::verify_password(current, &hash) {
+    if !auth::verify_password(current, &hash) {
         return fail(AppError::BadRequest("current password is wrong".into()));
     }
     let new_hash = match auth::hash_password(password) {
@@ -1000,7 +1081,9 @@ async fn banners(user: CurrentUser) -> Response {
     ok(json!([]))
 }
 async fn export_config(State(app): State<Arc<App>>, user: CurrentUser) -> Response {
-    let _ = user;
+    if let Err(err) = require_admin(&user) {
+        return fail(err);
+    }
     match app.db.list_providers().await {
         Ok(p) => ok(json!({"providers": p})),
         Err(e) => fail(e),
@@ -1008,7 +1091,9 @@ async fn export_config(State(app): State<Arc<App>>, user: CurrentUser) -> Respon
 }
 
 async fn list_models(State(app): State<Arc<App>>, user: CurrentUser) -> Response {
-    let _ = user;
+    if let Err(err) = require_admin(&user) {
+        return fail(err);
+    }
     match app.db.list_workspace_models().await {
         Ok(v) => ok(json!(v)),
         Err(e) => fail(e),
@@ -1022,6 +1107,9 @@ async fn create_model(
     user: CurrentUser,
     Json(body): Json<Value>,
 ) -> Response {
+    if let Err(err) = require_admin(&user) {
+        return fail(err);
+    }
     match app.db.upsert_workspace_model(&user.id, &body).await {
         Ok(v) => ok(v),
         Err(e) => fail(e),
@@ -1036,7 +1124,9 @@ async fn get_model(
     user: CurrentUser,
     Query(q): Query<IdQuery>,
 ) -> Response {
-    let _ = user;
+    if let Err(err) = require_admin(&user) {
+        return fail(err);
+    }
     match app.db.workspace_model(&q.id).await {
         Ok(v) => ok(v),
         Err(e) => fail(e),
@@ -1056,7 +1146,9 @@ async fn toggle_model(
     user: CurrentUser,
     Query(q): Query<IdQuery>,
 ) -> Response {
-    let _ = user;
+    if let Err(err) = require_admin(&user) {
+        return fail(err);
+    }
     match app.db.toggle_workspace_model(&q.id).await {
         Ok(v) => ok(v),
         Err(e) => fail(e),
@@ -1067,7 +1159,9 @@ async fn delete_model(
     user: CurrentUser,
     Query(q): Query<IdQuery>,
 ) -> Response {
-    let _ = user;
+    if let Err(err) = require_admin(&user) {
+        return fail(err);
+    }
     match app.db.delete_workspace_model(&q.id).await {
         Ok(v) => ok(json!(v)),
         Err(e) => fail(e),
@@ -1075,7 +1169,9 @@ async fn delete_model(
 }
 
 async fn list_tools(State(app): State<Arc<App>>, user: CurrentUser) -> Response {
-    let _ = user;
+    if let Err(err) = require_admin(&user) {
+        return fail(err);
+    }
     let servers = app.db.list_tool_servers().await.unwrap_or_default();
     let mut tools = Vec::new();
     for server in servers {
@@ -1102,7 +1198,9 @@ async fn list_tools(State(app): State<Arc<App>>, user: CurrentUser) -> Response 
     ok(json!(tools))
 }
 async fn list_tool_servers(State(app): State<Arc<App>>, user: CurrentUser) -> Response {
-    let _ = user;
+    if let Err(err) = require_admin(&user) {
+        return fail(err);
+    }
     match app.db.list_tool_servers().await {
         Ok(v) => ok(json!(v)),
         Err(e) => fail(e),
@@ -1113,6 +1211,9 @@ async fn upsert_tool_server(
     user: CurrentUser,
     Json(body): Json<Value>,
 ) -> Response {
+    if let Err(err) = require_admin(&user) {
+        return fail(err);
+    }
     match app.db.upsert_tool_server(&user.id, &body).await {
         Ok(v) => ok(v),
         Err(e) => fail(e),
@@ -1123,7 +1224,9 @@ async fn delete_tool_server(
     user: CurrentUser,
     Path(id): Path<String>,
 ) -> Response {
-    let _ = user;
+    if let Err(err) = require_admin(&user) {
+        return fail(err);
+    }
     match app.db.delete_tool_server(&id).await {
         Ok(v) => ok(json!(v)),
         Err(e) => fail(e),
@@ -1131,7 +1234,9 @@ async fn delete_tool_server(
 }
 
 async fn task_config(State(app): State<Arc<App>>, user: CurrentUser) -> Response {
-    let _ = user;
+    if let Err(err) = require_admin(&user) {
+        return fail(err);
+    }
     match app.db.config_get("tasks").await {
         Ok(v) => ok(v.unwrap_or(json!({"TASK_MODEL": "", "TITLE_GENERATION_PROMPT_TEMPLATE": ""}))),
         Err(e) => fail(e),
@@ -1142,7 +1247,9 @@ async fn task_config_set(
     user: CurrentUser,
     Json(body): Json<Value>,
 ) -> Response {
-    let _ = user;
+    if let Err(err) = require_admin(&user) {
+        return fail(err);
+    }
     if let Err(e) = app.db.config_set("tasks", &body).await {
         return fail(e);
     }

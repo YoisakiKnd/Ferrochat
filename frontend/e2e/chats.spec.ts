@@ -4,7 +4,7 @@ import { login } from './auth';
 // These endpoints were 404s or stubs while the frontend already called them.
 // Keep the URL paths and body shapes identical to `$lib/apis/chats` so a rename
 // on either side fails here instead of shipping a dead button.
-// Titles are tagged @chats: CI runs them only on release tags (see .github/workflows/ci.yml).
+// Titles retain @chats so the archive and tag cases can be selected locally.
 
 test('@chats archive toggles and the archived lists agree', async ({ page }) => {
 	const token = await login(page, 'ada@example.com', 'Ada');

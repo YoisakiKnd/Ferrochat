@@ -1,322 +1,208 @@
 <script lang="ts">
 	import { toast } from 'svelte-sonner';
-	import { createEventDispatcher, tick, getContext, onMount, onDestroy } from 'svelte';
+	import { createEventDispatcher, getContext, onMount, onDestroy } from 'svelte';
 	import { config, settings } from '$lib/stores';
-	import { blobToFile, calculateSHA256, extractCurlyBraceWords } from '$lib/utils';
-
+	import { blobToFile } from '$lib/utils';
 	import { transcribeAudio } from '$lib/apis/audio';
 
 	const i18n = getContext<import('svelte/store').Writable<import('i18next').i18n>>('i18n');
-
 	const dispatch = createEventDispatcher();
-
 	export let recording = false;
 	export let className = ' p-2.5 w-full max-w-full';
 
-	let loading = false;
+	type Recognition = {
+		continuous: boolean;
+		onresult:
+			| ((event: {
+					results: ArrayLike<ArrayLike<{ transcript: string }>>;
+					resultIndex: number;
+			  }) => void)
+			| null;
+		onend: (() => void) | null;
+		onerror: ((event: { error: string }) => void) | null;
+		start: () => void;
+		stop: () => void;
+	};
+	let loading = true;
 	let confirmed = false;
-
+	let cancelled = false;
 	let durationSeconds = 0;
-	let durationCounter = null;
-
+	let durationCounter: ReturnType<typeof setInterval>;
 	let transcription = '';
-
-	const startDurationCounter = () => {
-		durationCounter = setInterval(() => {
-			durationSeconds++;
-		}, 1000);
-	};
-
-	const stopDurationCounter = () => {
-		clearInterval(durationCounter);
-		durationSeconds = 0;
-	};
-
-	$: if (recording) {
-		startRecording();
-	} else {
-		stopRecording();
-	}
-
-	const formatSeconds = (seconds) => {
-		const minutes = Math.floor(seconds / 60);
-		const remainingSeconds = seconds % 60;
-		const formattedSeconds = remainingSeconds < 10 ? `0${remainingSeconds}` : remainingSeconds;
-		return `${minutes}:${formattedSeconds}`;
-	};
-
-	let stream;
-	let speechRecognition;
-
-	let mediaRecorder;
-	let audioChunks = [];
-
-	const MIN_DECIBELS = -45;
+	let stream: MediaStream | null = null;
+	let mediaRecorder: MediaRecorder | null = null;
+	let speechRecognition: Recognition | null = null;
+	let audioContext: AudioContext | null = null;
+	let frameId = 0;
+	let inactivityTimer: ReturnType<typeof setTimeout>;
+	const transcriptionAbort = new AbortController();
 	let VISUALIZER_BUFFER_LENGTH = 300;
-
 	let visualizerData = Array(VISUALIZER_BUFFER_LENGTH).fill(0);
+	let resizeObserver: ResizeObserver;
+	let containerWidth = 0;
 
-	// Function to calculate the RMS level from time domain data
-	const calculateRMS = (data: Uint8Array) => {
-		let sumSquares = 0;
-		for (let i = 0; i < data.length; i++) {
-			const normalizedValue = (data[i] - 128) / 128; // Normalize the data
-			sumSquares += normalizedValue * normalizedValue;
+	const formatSeconds = (seconds: number) =>
+		`${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')}`;
+
+	const releaseResources = () => {
+		clearInterval(durationCounter);
+		clearTimeout(inactivityTimer);
+		cancelAnimationFrame(frameId);
+		stream?.getTracks().forEach((track) => track.stop());
+		stream = null;
+		audioContext?.close().catch(() => null);
+		audioContext = null;
+		if (speechRecognition) {
+			speechRecognition.onend = null;
+			speechRecognition.onerror = null;
+			speechRecognition.onresult = null;
+			try {
+				speechRecognition.stop();
+			} catch {
+				// Recognition may not have started when initialization failed.
+			}
+			speechRecognition = null;
 		}
-		return Math.sqrt(sumSquares / data.length);
 	};
 
-	const normalizeRMS = (rms) => {
-		rms = rms * 10;
-		const exp = 1.5; // Adjust exponent value; values greater than 1 expand larger numbers more and compress smaller numbers more
-		const scaledRMS = Math.pow(rms, exp);
-
-		// Scale between 0.01 (1%) and 1.0 (100%)
-		return Math.min(1.0, Math.max(0.01, scaledRMS));
+	const stopRecording = () => {
+		cancelled = true;
+		transcriptionAbort.abort();
+		if (mediaRecorder && mediaRecorder.state !== 'inactive') {
+			mediaRecorder.onstop = null;
+			mediaRecorder.ondataavailable = null;
+			mediaRecorder.stop();
+		}
+		releaseResources();
+		recording = false;
 	};
 
-	const analyseAudio = (stream) => {
-		const audioContext = new AudioContext();
-		const audioStreamSource = audioContext.createMediaStreamSource(stream);
+	const failRecording = (error: unknown) => {
+		if (cancelled) return;
+		toast.error(String(error));
+		stopRecording();
+		dispatch('cancel');
+	};
 
+	const analyseAudio = (sourceStream: MediaStream) => {
+		audioContext = new AudioContext();
+		const source = audioContext.createMediaStreamSource(sourceStream);
 		const analyser = audioContext.createAnalyser();
-		analyser.minDecibels = MIN_DECIBELS;
-		audioStreamSource.connect(analyser);
-
-		const bufferLength = analyser.frequencyBinCount;
-
-		const domainData = new Uint8Array(bufferLength);
-		const timeDomainData = new Uint8Array(analyser.fftSize);
-
-		let lastSoundTime = Date.now();
-
-		const detectSound = () => {
-			const processFrame = () => {
-				if (!recording || loading) return;
-
-				if (recording && !loading) {
-					analyser.getByteTimeDomainData(timeDomainData);
-					analyser.getByteFrequencyData(domainData);
-
-					// Calculate RMS level from time domain data
-					const rmsLevel = calculateRMS(timeDomainData);
-					// Push the calculated decibel level to visualizerData
-					visualizerData.push(normalizeRMS(rmsLevel));
-
-					// Ensure visualizerData array stays within the buffer length
-					if (visualizerData.length >= VISUALIZER_BUFFER_LENGTH) {
-						visualizerData.shift();
-					}
-
-					visualizerData = visualizerData;
-
-					// if (domainData.some((value) => value > 0)) {
-					// 	lastSoundTime = Date.now();
-					// }
-
-					// if (recording && Date.now() - lastSoundTime > 3000) {
-					// 	if ($settings?.speechAutoSend ?? false) {
-					// 		confirmRecording();
-					// 	}
-					// }
-				}
-
-				window.requestAnimationFrame(processFrame);
-			};
-
-			window.requestAnimationFrame(processFrame);
+		source.connect(analyser);
+		const samples = new Uint8Array(analyser.fftSize);
+		const processFrame = () => {
+			if (cancelled || loading) return;
+			analyser.getByteTimeDomainData(samples);
+			const rms = Math.sqrt(
+				samples.reduce((sum, value) => sum + ((value - 128) / 128) ** 2, 0) / samples.length
+			);
+			visualizerData = [
+				...visualizerData.slice(-(VISUALIZER_BUFFER_LENGTH - 1)),
+				Math.min(1, (rms * 10) ** 1.5)
+			];
+			frameId = requestAnimationFrame(processFrame);
 		};
-
-		detectSound();
+		frameId = requestAnimationFrame(processFrame);
 	};
 
-	const transcribeHandler = async (audioBlob) => {
-		// Create a blob from the audio chunks
-
-		await tick();
-		const file = blobToFile(audioBlob, 'recording.wav');
-
-		const res = await transcribeAudio(localStorage.token, file).catch((error) => {
-			toast.error(`${error}`);
-			return null;
-		});
-
-		if (res) {
-			console.log(res);
-			dispatch('confirm', res);
-		}
+	const finishBrowserRecording = () => {
+		if (cancelled) return;
+		releaseResources();
+		recording = false;
+		if (transcription.trim()) dispatch('confirm', { text: transcription.trim() });
+		else dispatch('cancel');
 	};
 
-	const saveRecording = (blob) => {
-		const url = URL.createObjectURL(blob);
-		const a = document.createElement('a');
-		document.body.appendChild(a);
-		a.style = 'display: none';
-		a.href = url;
-		a.download = 'recording.wav';
-		a.click();
-		window.URL.revokeObjectURL(url);
+	const confirmRecording = () => {
+		if (loading || confirmed || cancelled) return;
+		confirmed = true;
+		loading = true;
+		clearInterval(durationCounter);
+		clearTimeout(inactivityTimer);
+		if (speechRecognition) speechRecognition.stop();
+		else if (mediaRecorder?.state === 'recording') mediaRecorder.stop();
 	};
 
 	const startRecording = async () => {
-		loading = true;
-
-		stream = await navigator.mediaDevices.getUserMedia({
-			audio: {
-				echoCancellation: true,
-				noiseSuppression: true,
-				autoGainControl: true
-			}
-		});
-		mediaRecorder = new MediaRecorder(stream);
-		mediaRecorder.onstart = () => {
-			console.log('Recording started');
-			loading = false;
-			startDurationCounter();
-
-			audioChunks = [];
-			analyseAudio(stream);
+		const web = ($settings?.audio?.stt?.engine || $config?.audio?.stt?.engine || 'web') === 'web';
+		const speechWindow = window as typeof window & {
+			SpeechRecognition?: new () => Recognition;
+			webkitSpeechRecognition?: new () => Recognition;
 		};
-		mediaRecorder.ondataavailable = (event) => audioChunks.push(event.data);
-		mediaRecorder.onstop = async () => {
-			console.log('Recording stopped');
-			if ($config.audio.stt.engine === 'web' || ($settings?.audio?.stt?.engine ?? '') === 'web') {
-				audioChunks = [];
-			} else {
-				if (confirmed) {
-					const audioBlob = new Blob(audioChunks, { type: 'audio/wav' });
-
-					await transcribeHandler(audioBlob);
-
-					confirmed = false;
-					loading = false;
-				}
-				audioChunks = [];
-				recording = false;
+		const Recognition = speechWindow.SpeechRecognition ?? speechWindow.webkitSpeechRecognition;
+		try {
+			if (web && !Recognition)
+				throw $i18n.t('Speech recognition is not supported in this browser.');
+			const acquired = await navigator.mediaDevices.getUserMedia({
+				audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true }
+			});
+			if (cancelled) {
+				acquired.getTracks().forEach((track) => track.stop());
+				return;
 			}
-		};
-		mediaRecorder.start();
-		if ($config.audio.stt.engine === 'web' || ($settings?.audio?.stt?.engine ?? '') === 'web') {
-			if ('SpeechRecognition' in window || 'webkitSpeechRecognition' in window) {
-				// Create a SpeechRecognition object
-				speechRecognition = new (window.SpeechRecognition || window.webkitSpeechRecognition)();
-
-				// Set continuous to true for continuous recognition
+			stream = acquired;
+			if (web && Recognition) {
+				speechRecognition = new Recognition();
 				speechRecognition.continuous = true;
-
-				// Set the timeout for turning off the recognition after inactivity (in milliseconds)
-				const inactivityTimeout = 2000; // 3 seconds
-
-				let timeoutId;
-				// Start recognition
+				speechRecognition.onresult = (event) => {
+					clearTimeout(inactivityTimer);
+					for (let i = event.resultIndex; i < event.results.length; i++) {
+						transcription += `${event.results[i][0].transcript} `;
+					}
+					inactivityTimer = setTimeout(() => speechRecognition?.stop(), 2000);
+				};
+				speechRecognition.onend = finishBrowserRecording;
+				speechRecognition.onerror = (event) =>
+					failRecording($i18n.t('Speech recognition error: {{error}}', { error: event.error }));
 				speechRecognition.start();
-
-				// Event triggered when speech is recognized
-				speechRecognition.onresult = async (event) => {
-					// Clear the inactivity timeout
-					clearTimeout(timeoutId);
-
-					// Handle recognized speech
-					console.log(event);
-					const transcript = event.results[Object.keys(event.results).length - 1][0].transcript;
-
-					transcription = `${transcription}${transcript}`;
-
-					await tick();
-					document.getElementById('chat-input')?.focus();
-
-					// Restart the inactivity timeout
-					timeoutId = setTimeout(() => {
-						console.log('Speech recognition turned off due to inactivity.');
-						speechRecognition.stop();
-					}, inactivityTimeout);
+			} else {
+				const recorder = new MediaRecorder(acquired);
+				mediaRecorder = recorder;
+				const chunks: BlobPart[] = [];
+				recorder.ondataavailable = (event) => chunks.push(event.data);
+				recorder.onstop = async () => {
+					releaseResources();
+					if (!confirmed || cancelled) return;
+					try {
+						const mime = recorder.mimeType || 'audio/webm';
+						const extension = mime.includes('mp4') ? 'mp4' : mime.includes('ogg') ? 'ogg' : 'webm';
+						const file = blobToFile(new Blob(chunks, { type: mime }), `recording.${extension}`);
+						const result = await transcribeAudio(
+							localStorage.token,
+							file,
+							transcriptionAbort.signal
+						);
+						if (cancelled) return;
+						if (!result || typeof result.text !== 'string')
+							throw $i18n.t('Unable to transcribe this recording.');
+						recording = false;
+						dispatch('confirm', result);
+					} catch (error) {
+						failRecording(error);
+					}
 				};
-
-				// Event triggered when recognition is ended
-				speechRecognition.onend = function () {
-					// Restart recognition after it ends
-					console.log('recognition ended');
-
-					confirmRecording();
-					dispatch('confirm', { text: transcription });
-					confirmed = false;
-					loading = false;
-				};
-
-				// Event triggered when an error occurs
-				speechRecognition.onerror = function (event) {
-					console.log(event);
-					toast.error($i18n.t(`Speech recognition error: {{error}}`, { error: event.error }));
-					dispatch('cancel');
-
-					stopRecording();
-				};
+				recorder.start();
 			}
+			loading = false;
+			durationCounter = setInterval(() => durationSeconds++, 1000);
+			analyseAudio(acquired);
+		} catch (error) {
+			failRecording(error);
 		}
 	};
-
-	const stopRecording = async () => {
-		if (recording && mediaRecorder) {
-			await mediaRecorder.stop();
-		}
-
-		if (speechRecognition) {
-			speechRecognition.stop();
-		}
-
-		stopDurationCounter();
-		audioChunks = [];
-
-		if (stream) {
-			const tracks = stream.getTracks();
-			tracks.forEach((track) => track.stop());
-		}
-
-		stream = null;
-	};
-
-	const confirmRecording = async () => {
-		loading = true;
-		confirmed = true;
-
-		if (recording && mediaRecorder) {
-			await mediaRecorder.stop();
-		}
-		clearInterval(durationCounter);
-
-		if (stream) {
-			const tracks = stream.getTracks();
-			tracks.forEach((track) => track.stop());
-		}
-
-		stream = null;
-	};
-
-	let resizeObserver;
-	let containerWidth;
-
-	let maxVisibleItems = 300;
-	$: maxVisibleItems = Math.floor(containerWidth / 5); // 2px width + 0.5px gap
 
 	onMount(() => {
-		// listen to width changes
 		resizeObserver = new ResizeObserver(() => {
-			VISUALIZER_BUFFER_LENGTH = Math.floor(window.innerWidth / 4);
-			if (visualizerData.length > VISUALIZER_BUFFER_LENGTH) {
-				visualizerData = visualizerData.slice(visualizerData.length - VISUALIZER_BUFFER_LENGTH);
-			} else {
-				visualizerData = Array(VISUALIZER_BUFFER_LENGTH - visualizerData.length)
-					.fill(0)
-					.concat(visualizerData);
-			}
+			VISUALIZER_BUFFER_LENGTH = Math.max(2, Math.floor(window.innerWidth / 4));
+			visualizerData = visualizerData.slice(-VISUALIZER_BUFFER_LENGTH);
 		});
-
 		resizeObserver.observe(document.body);
+		if (recording) startRecording();
 	});
 
 	onDestroy(() => {
-		// remove resize observer
-		resizeObserver.disconnect();
+		resizeObserver?.disconnect();
+		stopRecording();
 	});
 </script>
 
@@ -329,6 +215,7 @@
 	<div class="flex items-center mr-1">
 		<button
 			type="button"
+			aria-label={$i18n.t('Cancel recording')}
 			class="p-1.5
 
             {loading
@@ -487,6 +374,7 @@
 			{:else}
 				<button
 					type="button"
+					aria-label={$i18n.t('Confirm recording')}
 					class="p-1.5 bg-indigo-500 text-white dark:bg-indigo-500 dark:text-blue-950 rounded-full"
 					on:click={async () => {
 						await confirmRecording();

@@ -80,6 +80,25 @@ pub(crate) async fn import_chat(
     Json(body): Json<Value>,
 ) -> Response {
     let chat = body.get("chat").cloned().unwrap_or(json!({}));
+    if !chat.is_object()
+        || (chat.get("history").is_none() && chat.get("messages").is_none())
+        || chat.get("history").is_some_and(|history| {
+            !history.is_object()
+                || !history
+                    .get("messages")
+                    .and_then(Value::as_object)
+                    .is_some_and(|messages| messages.values().all(Value::is_object))
+        })
+        || chat.get("messages").is_some_and(|messages| {
+            !messages
+                .as_array()
+                .is_some_and(|messages| messages.iter().all(Value::is_object))
+        })
+    {
+        return fail(ferrochat_core::AppError::BadRequest(
+            "invalid chat import".into(),
+        ));
+    }
     let meta = body.get("meta").cloned().unwrap_or(json!({}));
     let pinned = body
         .get("pinned")
@@ -247,7 +266,9 @@ pub(crate) async fn chat_tags(
     user: CurrentUser,
     Path(id): Path<String>,
 ) -> Response {
-    let _ = user;
+    if let Err(err) = app.db.chat(&id, &user.id).await {
+        return fail(err);
+    }
     match app.db.chat_tags(&id).await {
         Ok(v) => ok(json!(v)),
         Err(e) => fail(e),
@@ -297,6 +318,54 @@ pub(crate) async fn list_folders(State(app): State<Arc<App>>, user: CurrentUser)
         Err(e) => fail(e),
     }
 }
+pub(crate) async fn folder_chats(
+    State(app): State<Arc<App>>,
+    user: CurrentUser,
+    Path(id): Path<String>,
+) -> Response {
+    match app.db.chats_in_folder(&id, &user.id).await {
+        Ok(v) => ok(json!(v)),
+        Err(e) => fail(e),
+    }
+}
+
+pub(crate) async fn expand_folder(
+    State(app): State<Arc<App>>,
+    user: CurrentUser,
+    Path(id): Path<String>,
+    Json(body): Json<Value>,
+) -> Response {
+    let Some(expanded) = body.get("is_expanded").and_then(Value::as_bool) else {
+        return fail(ferrochat_core::AppError::BadRequest(
+            "is_expanded must be a boolean".into(),
+        ));
+    };
+    match app.db.set_folder_expanded(&id, &user.id, expanded).await {
+        Ok(v) => ok(v),
+        Err(e) => fail(e),
+    }
+}
+
+pub(crate) async fn move_folder(
+    State(app): State<Arc<App>>,
+    user: CurrentUser,
+    Path(id): Path<String>,
+    Json(body): Json<Value>,
+) -> Response {
+    let parent_id = match body.get("parent_id") {
+        None | Some(Value::Null) => None,
+        Some(Value::String(id)) => Some(id.as_str()),
+        _ => {
+            return fail(ferrochat_core::AppError::BadRequest(
+                "parent_id must be a string or null".into(),
+            ))
+        }
+    };
+    match app.db.set_folder_parent(&id, &user.id, parent_id).await {
+        Ok(v) => ok(v),
+        Err(e) => fail(e),
+    }
+}
 pub(crate) async fn create_folder(
     State(app): State<Arc<App>>,
     user: CurrentUser,
@@ -305,7 +374,13 @@ pub(crate) async fn create_folder(
     let name = body
         .get("name")
         .and_then(|v| v.as_str())
-        .unwrap_or("Folder");
+        .unwrap_or("Folder")
+        .trim();
+    if name.is_empty() {
+        return fail(ferrochat_core::AppError::BadRequest(
+            "folder name cannot be empty".into(),
+        ));
+    }
     match app.db.create_folder(&user.id, name, None).await {
         Ok(v) => ok(v),
         Err(e) => fail(e),
@@ -316,8 +391,7 @@ pub(crate) async fn get_folder(
     user: CurrentUser,
     Path(id): Path<String>,
 ) -> Response {
-    let _ = user;
-    match app.db.folder(&id).await {
+    match app.db.folder(&id, &user.id).await {
         Ok(v) => ok(v),
         Err(e) => fail(e),
     }
@@ -338,12 +412,17 @@ pub(crate) async fn rename_folder(
     Path(id): Path<String>,
     Json(body): Json<Value>,
 ) -> Response {
-    let _ = user;
     let name = body
         .get("name")
         .and_then(|v| v.as_str())
-        .unwrap_or("Folder");
-    match app.db.update_folder_name(&id, name).await {
+        .unwrap_or("Folder")
+        .trim();
+    if name.is_empty() {
+        return fail(ferrochat_core::AppError::BadRequest(
+            "folder name cannot be empty".into(),
+        ));
+    }
+    match app.db.update_folder_name(&id, &user.id, name).await {
         Ok(v) => ok(v),
         Err(e) => fail(e),
     }
@@ -395,8 +474,7 @@ pub(crate) async fn delete_prompt(
     user: CurrentUser,
     Path(command): Path<String>,
 ) -> Response {
-    let _ = user;
-    match app.db.delete_prompt(&command).await {
+    match app.db.delete_prompt(&command, &user.id).await {
         Ok(v) => ok(json!(v)),
         Err(e) => fail(e),
     }

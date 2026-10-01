@@ -13,6 +13,9 @@ impl Db {
         pinned: bool,
         folder_id: Option<&str>,
     ) -> Result<Value, AppError> {
+        if let Some(folder_id) = folder_id {
+            self.folder(folder_id, user_id).await?;
+        }
         let id = Uuid::new_v4().to_string();
         let title = chat
             .get("title")
@@ -78,20 +81,27 @@ impl Db {
         self.chat(id, user_id).await
     }
 
-    pub async fn set_chat_title(&self, id: &str, title: &str) -> Result<(), AppError> {
-        let row = sqlx::query("SELECT chat_json FROM chats WHERE id = ?")
+    pub async fn set_chat_title(
+        &self,
+        id: &str,
+        user_id: &str,
+        title: &str,
+    ) -> Result<(), AppError> {
+        let row = sqlx::query("SELECT chat_json FROM chats WHERE id = ? AND user_id = ?")
             .bind(id)
+            .bind(user_id)
             .fetch_optional(&self.pool)
             .await
             .map_err(internal)?;
         if let Some(row) = row {
             let mut chat: Value = serde_json::from_str(row.get("chat_json")).unwrap_or(json!({}));
             chat["title"] = json!(title);
-            sqlx::query("UPDATE chats SET title = ?, chat_json = ?, updated_at = ? WHERE id = ?")
+            sqlx::query("UPDATE chats SET title = ?, chat_json = ?, updated_at = ? WHERE id = ? AND user_id = ?")
                 .bind(title)
                 .bind(chat.to_string())
                 .bind(now())
                 .bind(id)
+                .bind(user_id)
                 .execute(&self.pool)
                 .await
                 .map_err(internal)?;
@@ -112,6 +122,14 @@ impl Db {
         Ok(chat_json(row))
     }
 
+    pub async fn chat_owner(&self, id: &str) -> Result<Option<String>, AppError> {
+        sqlx::query_scalar("SELECT user_id FROM chats WHERE id = ?")
+            .bind(id)
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(internal)
+    }
+
     pub async fn list_chats(
         &self,
         user_id: &str,
@@ -119,9 +137,9 @@ impl Db {
         archived: bool,
     ) -> Result<Vec<Value>, AppError> {
         let limit = 60;
-        let offset = page.saturating_sub(1) * limit;
+        let offset = page.max(1).saturating_sub(1).saturating_mul(limit);
         let rows = sqlx::query(
-            "SELECT id, title, created_at, updated_at FROM chats WHERE user_id = ? AND archived = ? ORDER BY updated_at DESC LIMIT ? OFFSET ?",
+            "SELECT id, title, created_at, updated_at FROM chats WHERE user_id = ? AND archived = ? AND pinned = 0 AND folder_id IS NULL ORDER BY updated_at DESC LIMIT ? OFFSET ?",
         )
         .bind(user_id)
         .bind(archived as i64)
@@ -266,8 +284,10 @@ impl Db {
         } else {
             None
         };
-        sqlx::query("UPDATE chats SET share_id = ?, updated_at = ? WHERE id = ? AND user_id = ?")
+        sqlx::query("UPDATE chats SET share_id = CASE WHEN ? THEN COALESCE(share_id, ?) ELSE NULL END, shared_chat_json = CASE WHEN ? THEN chat_json ELSE NULL END, updated_at = ? WHERE id = ? AND user_id = ?")
+            .bind(shared)
             .bind(&share_id)
+            .bind(shared)
             .bind(now())
             .bind(id)
             .bind(user_id)
@@ -278,15 +298,17 @@ impl Db {
     }
 
     pub async fn chat_by_share(&self, share_id: &str) -> Result<Value, AppError> {
-        let row = sqlx::query(
-            "SELECT id, user_id, title, chat_json, created_at, updated_at, share_id, archived, pinned, meta_json, folder_id FROM chats WHERE share_id = ?",
+        let snapshot: String = sqlx::query_scalar(
+            "SELECT shared_chat_json FROM chats WHERE share_id = ? AND shared_chat_json IS NOT NULL",
         )
         .bind(share_id)
         .fetch_optional(&self.pool)
         .await
         .map_err(internal)?
         .ok_or_else(|| AppError::NotFound("shared chat not found".into()))?;
-        Ok(chat_json(row))
+        let chat: Value = serde_json::from_str(&snapshot)
+            .map_err(|error| AppError::Internal(error.to_string()))?;
+        Ok(json!({"id": share_id, "title": chat.get("title"), "chat": chat}))
     }
 
     pub async fn set_folder(
@@ -295,6 +317,9 @@ impl Db {
         user_id: &str,
         folder_id: Option<&str>,
     ) -> Result<Value, AppError> {
+        if let Some(folder_id) = folder_id {
+            self.folder(folder_id, user_id).await?;
+        }
         sqlx::query("UPDATE chats SET folder_id = ?, updated_at = ? WHERE id = ? AND user_id = ?")
             .bind(folder_id)
             .bind(now())
@@ -339,6 +364,7 @@ impl Db {
         chat_id: &str,
         name: &str,
     ) -> Result<Vec<Value>, AppError> {
+        self.chat(chat_id, user_id).await?;
         let existing = sqlx::query("SELECT id FROM tags WHERE user_id = ? AND name = ?")
             .bind(user_id)
             .bind(name)
@@ -373,6 +399,7 @@ impl Db {
         chat_id: &str,
         name: &str,
     ) -> Result<Vec<Value>, AppError> {
+        self.chat(chat_id, user_id).await?;
         sqlx::query(
             "DELETE FROM chat_tags WHERE chat_id = ? AND tag_id = (SELECT id FROM tags WHERE user_id = ? AND name = ?)",
         )
@@ -400,7 +427,30 @@ impl Db {
         .fetch_all(&self.pool)
         .await
         .map_err(internal)?;
-        Ok(rows.into_iter().map(folder_json).collect())
+        let chats = sqlx::query("SELECT id, title, created_at, updated_at, folder_id FROM chats WHERE user_id = ? AND archived = 0 AND folder_id IS NOT NULL ORDER BY updated_at DESC")
+            .bind(user_id).fetch_all(&self.pool).await.map_err(internal)?;
+        let mut grouped: std::collections::HashMap<String, Vec<Value>> =
+            std::collections::HashMap::new();
+        for chat in chats {
+            let folder_id: String = chat.get("folder_id");
+            grouped.entry(folder_id).or_default().push(chat_brief(chat));
+        }
+        Ok(rows
+            .into_iter()
+            .map(|row| {
+                let mut folder = folder_json(row);
+                let id = folder["id"].as_str().unwrap_or_default();
+                folder["items"] = json!({"chats": grouped.remove(id).unwrap_or_default()});
+                folder
+            })
+            .collect())
+    }
+
+    pub async fn chats_in_folder(&self, id: &str, user_id: &str) -> Result<Vec<Value>, AppError> {
+        self.folder(id, user_id).await?;
+        let rows = sqlx::query("SELECT id, user_id, title, chat_json, created_at, updated_at, share_id, archived, pinned, meta_json, folder_id FROM chats WHERE folder_id = ? AND user_id = ? AND archived = 0 ORDER BY updated_at DESC")
+            .bind(id).bind(user_id).fetch_all(&self.pool).await.map_err(internal)?;
+        Ok(rows.into_iter().map(chat_json).collect())
     }
 
     pub async fn create_folder(
@@ -409,6 +459,9 @@ impl Db {
         name: &str,
         parent_id: Option<&str>,
     ) -> Result<Value, AppError> {
+        if let Some(parent_id) = parent_id {
+            self.folder(parent_id, user_id).await?;
+        }
         let id = Uuid::new_v4().to_string();
         let ts = now();
         sqlx::query(
@@ -423,14 +476,15 @@ impl Db {
         .execute(&self.pool)
         .await
         .map_err(internal)?;
-        self.folder(&id).await
+        self.folder(&id, user_id).await
     }
 
-    pub async fn folder(&self, id: &str) -> Result<Value, AppError> {
+    pub async fn folder(&self, id: &str, user_id: &str) -> Result<Value, AppError> {
         let row = sqlx::query(
-            "SELECT id, parent_id, user_id, name, items_json, meta_json, is_expanded, created_at, updated_at FROM folders WHERE id = ?",
+            "SELECT id, parent_id, user_id, name, items_json, meta_json, is_expanded, created_at, updated_at FROM folders WHERE id = ? AND user_id = ?",
         )
         .bind(id)
+        .bind(user_id)
         .fetch_optional(&self.pool)
         .await
         .map_err(internal)?
@@ -438,25 +492,87 @@ impl Db {
         Ok(folder_json(row))
     }
 
-    pub async fn update_folder_name(&self, id: &str, name: &str) -> Result<Value, AppError> {
-        sqlx::query("UPDATE folders SET name = ?, updated_at = ? WHERE id = ?")
+    pub async fn update_folder_name(
+        &self,
+        id: &str,
+        user_id: &str,
+        name: &str,
+    ) -> Result<Value, AppError> {
+        sqlx::query("UPDATE folders SET name = ?, updated_at = ? WHERE id = ? AND user_id = ?")
             .bind(name)
             .bind(now())
-            .bind(id)
-            .execute(&self.pool)
-            .await
-            .map_err(internal)?;
-        self.folder(id).await
-    }
-
-    pub async fn delete_folder(&self, id: &str, user_id: &str) -> Result<bool, AppError> {
-        let r = sqlx::query("DELETE FROM folders WHERE id = ? AND user_id = ?")
             .bind(id)
             .bind(user_id)
             .execute(&self.pool)
             .await
             .map_err(internal)?;
-        Ok(r.rows_affected() > 0)
+        self.folder(id, user_id).await
+    }
+
+    pub async fn delete_folder(&self, id: &str, user_id: &str) -> Result<bool, AppError> {
+        let mut tx = self.pool.begin().await.map_err(internal)?;
+        let r = sqlx::query("DELETE FROM folders WHERE id = ? AND user_id = ?")
+            .bind(id)
+            .bind(user_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(internal)?;
+        if r.rows_affected() == 0 {
+            tx.rollback().await.map_err(internal)?;
+            return Ok(false);
+        }
+        sqlx::query("UPDATE chats SET folder_id = NULL WHERE folder_id = ? AND user_id = ?")
+            .bind(id)
+            .bind(user_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(internal)?;
+        sqlx::query("UPDATE folders SET parent_id = NULL WHERE parent_id = ? AND user_id = ?")
+            .bind(id)
+            .bind(user_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(internal)?;
+        tx.commit().await.map_err(internal)?;
+        Ok(true)
+    }
+
+    pub async fn set_folder_expanded(
+        &self,
+        id: &str,
+        user_id: &str,
+        expanded: bool,
+    ) -> Result<Value, AppError> {
+        sqlx::query(
+            "UPDATE folders SET is_expanded = ?, updated_at = ? WHERE id = ? AND user_id = ?",
+        )
+        .bind(expanded)
+        .bind(now())
+        .bind(id)
+        .bind(user_id)
+        .execute(&self.pool)
+        .await
+        .map_err(internal)?;
+        self.folder(id, user_id).await
+    }
+
+    pub async fn set_folder_parent(
+        &self,
+        id: &str,
+        user_id: &str,
+        parent_id: Option<&str>,
+    ) -> Result<Value, AppError> {
+        self.folder(id, user_id).await?;
+        let updated = sqlx::query("WITH RECURSIVE descendants(id) AS (SELECT id FROM folders WHERE id = ? AND user_id = ? UNION SELECT f.id FROM folders f JOIN descendants d ON f.parent_id = d.id WHERE f.user_id = ?) UPDATE folders SET parent_id = ?, updated_at = ? WHERE id = ? AND user_id = ? AND (? IS NULL OR (EXISTS(SELECT 1 FROM folders WHERE id = ? AND user_id = ?) AND ? NOT IN (SELECT id FROM descendants)))")
+            .bind(id).bind(user_id).bind(user_id).bind(parent_id).bind(now()).bind(id).bind(user_id)
+            .bind(parent_id).bind(parent_id).bind(user_id).bind(parent_id)
+            .execute(&self.pool).await.map_err(internal)?;
+        if updated.rows_affected() == 0 {
+            return Err(AppError::BadRequest(
+                "invalid parent folder: folder nesting cannot form a cycle".into(),
+            ));
+        }
+        self.folder(id, user_id).await
     }
 
     pub async fn list_prompts(&self, user_id: &str) -> Result<Vec<Value>, AppError> {
@@ -482,9 +598,9 @@ impl Db {
         } else {
             format!("/{command}")
         };
-        sqlx::query(
+        let result = sqlx::query(
             "INSERT INTO prompts (command, user_id, title, content, timestamp) VALUES (?, ?, ?, ?, ?)
-             ON CONFLICT(command) DO UPDATE SET title=excluded.title, content=excluded.content, timestamp=excluded.timestamp",
+             ON CONFLICT(command) DO UPDATE SET title=excluded.title, content=excluded.content, timestamp=excluded.timestamp WHERE prompts.user_id = excluded.user_id",
         )
         .bind(&cmd)
         .bind(user_id)
@@ -494,14 +610,20 @@ impl Db {
         .execute(&self.pool)
         .await
         .map_err(internal)?;
+        if result.rows_affected() == 0 {
+            return Err(AppError::BadRequest(
+                "prompt command is already in use".into(),
+            ));
+        }
         Ok(
             json!({"command": cmd, "user_id": user_id, "title": title, "content": content, "timestamp": now()}),
         )
     }
 
-    pub async fn delete_prompt(&self, command: &str) -> Result<bool, AppError> {
-        let r = sqlx::query("DELETE FROM prompts WHERE command = ?")
+    pub async fn delete_prompt(&self, command: &str, user_id: &str) -> Result<bool, AppError> {
+        let r = sqlx::query("DELETE FROM prompts WHERE command = ? AND user_id = ?")
             .bind(command)
+            .bind(user_id)
             .execute(&self.pool)
             .await
             .map_err(internal)?;
@@ -695,6 +817,7 @@ impl Db {
 
     pub async fn search_passages(
         &self,
+        user_id: &str,
         file_ids: &[String],
         query: &str,
         limit: i64,
@@ -718,14 +841,14 @@ impl Db {
         let q = fts_query(query);
         let sql = if q.chars().count() >= 3 {
             format!(
-                "SELECT file_id, filename, page, body FROM file_passages WHERE file_id IN ({list}) AND file_passages MATCH ? ORDER BY rank LIMIT ?"
+                "SELECT file_id, filename, page, body FROM file_passages WHERE file_id IN ({list}) AND file_id IN (SELECT id FROM files WHERE user_id = ?) AND file_passages MATCH ? ORDER BY rank LIMIT ?"
             )
         } else {
             format!(
-                "SELECT file_id, filename, page, body FROM file_passages WHERE file_id IN ({list}) ORDER BY rowid LIMIT ?"
+                "SELECT file_id, filename, page, body FROM file_passages WHERE file_id IN ({list}) AND file_id IN (SELECT id FROM files WHERE user_id = ?) ORDER BY rowid LIMIT ?"
             )
         };
-        let mut query = sqlx::query(&sql);
+        let mut query = sqlx::query(&sql).bind(user_id);
         if q.chars().count() >= 3 {
             query = query.bind(q);
         }
@@ -748,9 +871,10 @@ impl Db {
             .collect())
     }
 
-    pub async fn file_path(&self, id: &str) -> Result<(String, String), AppError> {
-        let row = sqlx::query("SELECT filename, path FROM files WHERE id = ?")
+    pub async fn file_path(&self, id: &str, user_id: &str) -> Result<(String, String), AppError> {
+        let row = sqlx::query("SELECT filename, path FROM files WHERE id = ? AND user_id = ?")
             .bind(id)
+            .bind(user_id)
             .fetch_optional(&self.pool)
             .await
             .map_err(internal)?

@@ -225,8 +225,9 @@
 	});
 
 	onDestroy(() => {
+		clearTimeout(isExpandedUpdateTimeout);
 		if (folderElement) {
-			folderElement.addEventListener('dragover', onDragOver);
+			folderElement.removeEventListener('dragover', onDragOver);
 			folderElement.removeEventListener('drop', onDrop);
 			folderElement.removeEventListener('dragleave', onDragLeave);
 
@@ -251,6 +252,7 @@
 	};
 
 	const nameUpdateHandler = async () => {
+		name = name.trim();
 		if (name === '') {
 			toast.error($i18n.t('Folder name cannot be empty'));
 			return;
@@ -263,7 +265,6 @@
 
 		const currentName = folders[folderId].name;
 
-		name = name.trim();
 		folders[folderId].name = name;
 
 		const res = await updateFolderNameById(localStorage.token, folderId, name).catch((error) => {
@@ -341,9 +342,12 @@
 >
 	<div class=" text-sm text-gray-700 dark:text-gray-300 flex-1 line-clamp-3">
 		{@html DOMPurify.sanitize(
-			$i18n.t('This will delete <strong>{{NAME}}</strong> and <strong>all its contents</strong>.', {
-				NAME: folders[folderId].name
-			})
+			$i18n.t(
+				'This will delete <strong>{{NAME}}</strong>. Its chats and subfolders will be moved to the sidebar.',
+				{
+					NAME: folders[folderId].name
+				}
+			)
 		)}
 	</div>
 </DeleteConfirmDialog>
@@ -361,7 +365,12 @@
 	</DragGhost>
 {/if}
 
-<div bind:this={folderElement} class="relative {className}" draggable="true">
+<div
+	bind:this={folderElement}
+	data-folder-id={folderId}
+	class="relative {className}"
+	draggable="true"
+>
 	{#if draggedOver}
 		<div
 			class="absolute top-0 left-0 w-full h-full rounded-xs bg-gray-100/50 dark:bg-gray-700/20 bg-opacity-50 dark:bg-opacity-10 z-50 pointer-events-none touch-none"
@@ -379,7 +388,7 @@
 		}}
 	>
 		<!-- svelte-ignore a11y-no-static-element-interactions -->
-		<div class="w-full group">
+		<div class="w-full group relative">
 			<button
 				id="folder-{folderId}-button"
 				class="relative w-full py-1.5 px-2 rounded-md flex items-center gap-1.5 text-xs text-gray-500 dark:text-gray-500 font-medium hover:bg-gray-100 dark:hover:bg-gray-900 transition"
@@ -428,33 +437,36 @@
 						{folders[folderId].name}
 					{/if}
 				</div>
-
-				<button
-					class="absolute z-10 right-2 invisible group-hover:visible self-center flex items-center dark:text-gray-300"
-					on:pointerup={(e) => {
-						e.stopPropagation();
+			</button>
+			<div
+				class="absolute z-10 right-2 invisible group-hover:visible self-center flex items-center dark:text-gray-300"
+				style="top: 50%; transform: translateY(-50%);"
+				on:pointerup={(e) => {
+					e.stopPropagation();
+				}}
+			>
+				<FolderMenu
+					on:rename={() => {
+						// Requires a timeout to prevent the click event from closing the dropdown
+						setTimeout(() => {
+							editHandler();
+						}, 200);
+					}}
+					on:delete={() => {
+						showDeleteConfirm = true;
+					}}
+					on:export={() => {
+						exportHandler();
 					}}
 				>
-					<FolderMenu
-						on:rename={() => {
-							// Requires a timeout to prevent the click event from closing the dropdown
-							setTimeout(() => {
-								editHandler();
-							}, 200);
-						}}
-						on:delete={() => {
-							showDeleteConfirm = true;
-						}}
-						on:export={() => {
-							exportHandler();
-						}}
+					<button
+						aria-label={$i18n.t('More')}
+						class="p-0.5 dark:hover:bg-gray-850 rounded-lg touch-auto"
 					>
-						<button class="p-0.5 dark:hover:bg-gray-850 rounded-lg touch-auto" on:click={(e) => {}}>
-							<EllipsisHorizontal className="size-4" strokeWidth="2.5" />
-						</button>
-					</FolderMenu>
-				</button>
-			</button>
+						<EllipsisHorizontal className="size-4" strokeWidth="2.5" />
+					</button>
+				</FolderMenu>
+			</div>
 		</div>
 
 		<div slot="content" class="w-full">

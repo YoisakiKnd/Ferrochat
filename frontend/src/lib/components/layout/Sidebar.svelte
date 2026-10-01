@@ -1,6 +1,6 @@
 <script lang="ts">
+	import { normalizeChatImports } from '$lib/utils/chat-import';
 	import { toast } from 'svelte-sonner';
-	import { v4 as uuidv4 } from 'uuid';
 
 	import { goto } from '$app/navigation';
 	import {
@@ -120,7 +120,9 @@
 		}
 	};
 
+	let creatingFolder = false;
 	const createFolder = async (name = 'Untitled') => {
+		if (creatingFolder) return;
 		if (name === '') {
 			toast.error($i18n.t('Folder name cannot be empty.'));
 			return;
@@ -139,22 +141,12 @@
 			name = `${name} ${i}`;
 		}
 
-		// Add a dummy folder to the list to show the user that the folder is being created
-		const tempId = uuidv4();
-		folders = {
-			...folders,
-			tempId: {
-				id: tempId,
-				name: name,
-				created_at: Date.now(),
-				updated_at: Date.now()
-			}
-		};
-
+		creatingFolder = true;
 		const res = await createNewFolder(localStorage.token, name).catch((error) => {
 			toast.error(`${error}`);
 			return null;
 		});
+		creatingFolder = false;
 
 		if (res) {
 			newFolderId = res.id;
@@ -243,37 +235,34 @@
 		}
 	};
 
+	let importingChats = false;
 	const importChatHandler = async (items, pinned = false, folderId = null) => {
-		console.log('importChatHandler', items, pinned, folderId);
-		for (const item of items) {
-			console.log(item);
-			if (item.chat) {
-				await importChat(localStorage.token, item.chat, item?.meta ?? {}, pinned, folderId);
+		if (importingChats) return;
+		importingChats = true;
+		let imported = 0;
+		try {
+			for (const item of normalizeChatImports(items)) {
+				await importChat(localStorage.token, item.chat, item.meta, pinned || item.pinned, folderId);
+				imported++;
 			}
-		}
-
-		initChatList();
-	};
-
-	const inputFilesHandler = async (files) => {
-		console.log(files);
-
-		for (const file of files) {
-			const reader = new FileReader();
-			reader.onload = async (e) => {
-				const content = e.target.result;
-
-				try {
-					const chatItems = JSON.parse(content);
-					importChatHandler(chatItems);
-				} catch {
-					toast.error($i18n.t(`Invalid file format.`));
-				}
-			};
-
-			reader.readAsText(file);
+			toast.success($i18n.t('Imported {{COUNT}} chats.', { COUNT: imported }));
+		} catch (error) {
+			toast.error(imported ? $i18n.t('Imported {{COUNT}} chats before the error: {{ERROR}}', { COUNT: imported, ERROR: String(error) }) : $i18n.t(String(error instanceof Error ? error.message : error)));
+		} finally {
+			importingChats = false;
+			await initChatList();
 		}
 	};
+
+    const inputFilesHandler = async (files) => {
+        for (const file of files) {
+            try {
+                await importChatHandler(JSON.parse(await file.text()));
+            } catch {
+                toast.error($i18n.t('Invalid file format.'));
+            }
+        }
+    };
 
 	const tagEventHandler = async (type, tagName, chatId) => {
 		console.log(type, tagName, chatId);

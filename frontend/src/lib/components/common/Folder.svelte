@@ -103,9 +103,9 @@
 		if (!dragAndDrop) {
 			return;
 		}
-		folderElement.addEventListener('dragover', onDragOver);
-		folderElement.removeEventListener('drop', onDrop);
-		folderElement.removeEventListener('dragleave', onDragLeave);
+		folderElement?.removeEventListener('dragover', onDragOver);
+		folderElement?.removeEventListener('drop', onDrop);
+		folderElement?.removeEventListener('dragleave', onDragLeave);
 	});
 </script>
 
@@ -144,7 +144,7 @@
 				</button>
 
 				{#if onAdd}
-					<button
+					<div
 						class="absolute z-10 right-2 invisible group-hover:visible self-center flex items-center dark:text-gray-300"
 						on:pointerup={(e) => {
 							e.stopPropagation();
@@ -156,13 +156,13 @@
 					>
 						<Tooltip content={onAddLabel}>
 							<button
+								aria-label={onAddLabel}
 								class="p-0.5 dark:hover:bg-gray-850 rounded-lg touch-auto"
-								on:click={(e) => {}}
 							>
 								<Plus className=" size-3" strokeWidth="2.5" />
 							</button>
 						</Tooltip>
-					</button>
+					</div>
 				{/if}
 			</div>
 

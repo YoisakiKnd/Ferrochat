@@ -42,7 +42,23 @@
 				localStorage.token = sessionUser.token;
 			}
 
-			$socket.emit('user-join', { auth: { token: sessionUser.token } });
+			if ($socket) {
+				const activeSocket = $socket;
+				activeSocket.auth = { token: sessionUser.token };
+				activeSocket.connect();
+				if (!activeSocket.connected) {
+					await new Promise((resolve) => {
+						const done = () => {
+							clearTimeout(timeout);
+							activeSocket.off('connect', done);
+							resolve();
+						};
+						const timeout = setTimeout(done, 5000);
+						activeSocket.once('connect', done);
+					});
+				}
+				activeSocket.emit('user-join', { auth: { token: sessionUser.token } });
+			}
 			await user.set(sessionUser);
 			await config.set(await getBackendConfig());
 

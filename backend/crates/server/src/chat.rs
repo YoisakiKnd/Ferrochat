@@ -18,17 +18,43 @@ const REASONING_OPEN: &str =
 const DONE_FALSE: &str = "done=\"false\"";
 
 pub async fn run(app: Arc<App>, user: CurrentUser, form: Value) -> Result<Value, AppError> {
+    if let Some(chat_id) = form
+        .get("chat_id")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+    {
+        if let Some(owner) = app.db.chat_owner(chat_id).await? {
+            if owner != user.id {
+                return Err(AppError::NotFound("chat not found".into()));
+            }
+        }
+    }
+    if let Some(sid) = form
+        .get("session_id")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+    {
+        let owned = app
+            .sockets
+            .lock()
+            .unwrap()
+            .get(sid)
+            .is_some_and(|entry| entry.user_id == user.id);
+        if !owned {
+            return Err(AppError::Unauthorized("invalid socket session".into()));
+        }
+    }
     let task_id = Uuid::new_v4().to_string();
     let cancel = tokio_util::sync::CancellationToken::new();
     app.tasks
         .lock()
         .unwrap()
-        .insert(task_id.clone(), cancel.clone());
+        .insert(task_id.clone(), (user.id.clone(), cancel.clone()));
     if let Some(chat_id) = form.get("chat_id").and_then(|v| v.as_str()) {
         app.chat_tasks
             .lock()
             .unwrap()
-            .entry(chat_id.to_string())
+            .entry((user.id.clone(), chat_id.to_string()))
             .or_default()
             .push(task_id.clone());
     }
@@ -49,6 +75,16 @@ pub async fn run(app: Arc<App>, user: CurrentUser, form: Value) -> Result<Value,
             );
         }
         app2.tasks.lock().unwrap().remove(&task_for_cleanup);
+        if let Some(chat_id) = form_for_task.get("chat_id").and_then(|v| v.as_str()) {
+            let key = (user.id.clone(), chat_id.to_string());
+            let mut chat_tasks = app2.chat_tasks.lock().unwrap();
+            if let Some(ids) = chat_tasks.get_mut(&key) {
+                ids.retain(|id| id != &task_for_cleanup);
+                if ids.is_empty() {
+                    chat_tasks.remove(&key);
+                }
+            }
+        }
     });
     Ok(json!({"status": true, "task_id": task_id}))
 }
@@ -100,7 +136,7 @@ async fn drive(
         vision,
         &app.data_dir,
     );
-    attach_document_excerpts(&app, form, &mut messages).await;
+    attach_document_excerpts(&app, user, form, &mut messages).await;
     let defaults = app
         .db
         .model_params(&provider_id, &model_id)
@@ -321,7 +357,7 @@ async fn drive(
             .and_then(|v| v.as_bool())
             .unwrap_or(false)
         {
-            let _ = app.db.set_chat_title(chat_id, title).await;
+            let _ = app.db.set_chat_title(chat_id, &user.id, title).await;
             emit(&app, form, json!({"type": "chat:title", "data": title}));
         }
     }
@@ -749,8 +785,8 @@ fn emit(app: &App, form: &Value, data: Value) {
         "message_id": form.get("id"),
         "data": data,
     });
-    if let Some(socket) = app.sockets.lock().unwrap().get(sid) {
-        let _ = socket.emit("chat-events", &payload);
+    if let Some(entry) = app.sockets.lock().unwrap().get(sid) {
+        let _ = entry.socket.emit("chat-events", &payload);
     }
 }
 
@@ -1257,7 +1293,12 @@ fn file_id(file: &Value) -> Option<&str> {
         .filter(|id| !id.is_empty())
 }
 
-async fn attach_document_excerpts(app: &App, form: &Value, messages: &mut Value) {
+async fn attach_document_excerpts(
+    app: &App,
+    user: &CurrentUser,
+    form: &Value,
+    messages: &mut Value,
+) {
     let Some(list) = form.get("files").and_then(|v| v.as_array()) else {
         return;
     };
@@ -1282,7 +1323,7 @@ async fn attach_document_excerpts(app: &App, form: &Value, messages: &mut Value)
         .unwrap_or("");
     let hits = app
         .db
-        .search_passages(&ids, query, 6)
+        .search_passages(&user.id, &ids, query, 6)
         .await
         .unwrap_or_default();
     if hits.is_empty() {

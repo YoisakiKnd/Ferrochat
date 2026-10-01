@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { getContext, onMount } from 'svelte';
+	import { getContext } from 'svelte';
 	import { models, config } from '$lib/stores';
 
 	import { toast } from 'svelte-sonner';
@@ -13,15 +13,14 @@
 
 	let chat = null;
 	let shareUrl = null;
+	let pending = false;
+	let loadError = '';
 	const i18n = getContext<import('svelte/store').Writable<import('i18next').i18n>>('i18n');
 
 	const shareLocalChat = async () => {
-		const _chat = chat;
-
 		const sharedChat = await shareChatById(localStorage.token, chatId);
-		shareUrl = `${window.location.origin}/s/${sharedChat.id}`;
-		console.log(shareUrl);
-		chat = await getChatById(localStorage.token, chatId);
+		shareUrl = `${window.location.origin}/s/${sharedChat.share_id}`;
+		chat = sharedChat;
 
 		return shareUrl;
 	};
@@ -55,29 +54,62 @@
 
 	export let show = false;
 
-	const isDifferentChat = (_chat) => {
-		if (!chat) {
-			return true;
+	const loadChat = async (id) => {
+		chat = null;
+		shareUrl = null;
+		loadError = '';
+		if (!id) return;
+		try {
+			chat = await getChatById(localStorage.token, id);
+		} catch (error) {
+			loadError = String(error);
 		}
-		if (!_chat) {
-			return false;
-		}
-		return chat.id !== _chat.id || chat.share_id !== _chat.share_id;
 	};
 
-	$: if (show) {
-		(async () => {
-			if (chatId) {
-				const _chat = await getChatById(localStorage.token, chatId);
-				if (isDifferentChat(_chat)) {
-					chat = _chat;
-				}
+	$: if (show) loadChat(chatId);
+
+	const copyShareLink = async () => {
+		if (pending) return;
+		pending = true;
+		try {
+			const isSafari = /^((?!chrome|android).)*safari/i.test(navigator.userAgent);
+			let copied;
+			if (isSafari && navigator.clipboard?.write && typeof ClipboardItem !== 'undefined') {
+				const url = shareLocalChat().then((value) => new Blob([value], { type: 'text/plain' }));
+				await navigator.clipboard.write([new ClipboardItem({ 'text/plain': url })]);
+				copied = true;
 			} else {
-				chat = null;
-				console.log(chat);
+				copied = await copyToClipboard(await shareLocalChat());
 			}
-		})();
-	}
+			if (copied) {
+				toast.success($i18n.t('Copied shared chat URL to clipboard!'));
+				show = false;
+			} else {
+				toast.error(
+					$i18n.t(
+						'Clipboard write permission denied. Please check your browser settings to grant the necessary access.'
+					)
+				);
+			}
+		} catch (error) {
+			toast.error(String(error));
+		} finally {
+			pending = false;
+		}
+	};
+
+	const deleteShareLink = async () => {
+		if (pending) return;
+		pending = true;
+		try {
+			chat = await deleteSharedChatById(localStorage.token, chatId);
+			shareUrl = null;
+		} catch (error) {
+			toast.error(String(error));
+		} finally {
+			pending = false;
+		}
+	};
 </script>
 
 <Modal bind:show size="md">
@@ -112,15 +144,7 @@
 							<span class=" underline">{$i18n.t('before')}</span>.</a
 						>
 						{$i18n.t('Click here to')}
-						<button
-							class="underline"
-							on:click={async () => {
-								const res = await deleteSharedChatById(localStorage.token, chatId);
-
-								if (res) {
-									chat = await getChatById(localStorage.token, chatId);
-								}
-							}}
+						<button disabled={pending} class="underline" on:click={deleteShareLink}
 							>{$i18n.t('delete this link')}
 						</button>
 						{$i18n.t('and create a new shared link.')}
@@ -130,6 +154,16 @@
 						)}
 					{/if}
 				</div>
+
+				{#if shareUrl}
+					<input
+						aria-label={$i18n.t('Shared chat URL')}
+						class="w-full rounded-lg p-2 text-sm dark:bg-gray-850"
+						readonly
+						value={shareUrl}
+						on:focus={(event) => event.currentTarget.select()}
+					/>
+				{/if}
 
 				<div class="flex justify-end">
 					<div class="flex flex-col items-end space-x-1 mt-3">
@@ -151,39 +185,8 @@
 								class="self-center flex items-center gap-1 px-3.5 py-2 text-sm font-medium bg-black hover:bg-gray-900 text-white dark:bg-white dark:text-black dark:hover:bg-gray-100 transition rounded-full"
 								type="button"
 								id="copy-and-share-chat-button"
-								on:click={async () => {
-									const isSafari = /^((?!chrome|android).)*safari/i.test(navigator.userAgent);
-
-									if (isSafari) {
-										// Oh, Safari, you're so special, let's give you some extra love and attention
-										console.log('isSafari');
-
-										const getUrlPromise = async () => {
-											const url = await shareLocalChat();
-											return new Blob([url], { type: 'text/plain' });
-										};
-
-										navigator.clipboard
-											.write([
-												new ClipboardItem({
-													'text/plain': getUrlPromise()
-												})
-											])
-											.then(() => {
-												console.log('Async: Copying to clipboard was successful!');
-												return true;
-											})
-											.catch((error) => {
-												console.error('Async: Could not copy text: ', error);
-												return false;
-											});
-									} else {
-										copyToClipboard(await shareLocalChat());
-									}
-
-									toast.success($i18n.t('Copied shared chat URL to clipboard!'));
-									show = false;
-								}}
+								disabled={pending}
+								on:click={copyShareLink}
 							>
 								<Link />
 
@@ -197,6 +200,13 @@
 					</div>
 				</div>
 			</div>
+		{:else if loadError}
+			<div class="px-5 py-4">
+				<p role="alert">{loadError}</p>
+				<button on:click={() => loadChat(chatId)}>{$i18n.t('Retry')}</button>
+			</div>
+		{:else}
+			<p class="px-5 py-4">{$i18n.t('Loading...')}</p>
 		{/if}
 	</div>
 </Modal>

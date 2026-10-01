@@ -1,5 +1,6 @@
 use ferrochat_core::AppError;
 use serde_json::Value;
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::time::Duration;
 
 #[derive(Debug, Clone)]
@@ -62,23 +63,77 @@ pub async fn search(query: &Query) -> Result<Vec<Hit>, AppError> {
 }
 
 pub async fn fetch_text(url: &str) -> Option<String> {
+    let parsed = reqwest::Url::parse(url).ok()?;
+    if !matches!(parsed.scheme(), "http" | "https") {
+        return None;
+    }
+    let host = parsed.host_str()?;
+    let port = parsed.port_or_known_default()?;
+    let addresses: Vec<SocketAddr> = tokio::net::lookup_host((host, port))
+        .await
+        .ok()?
+        .filter(|addr| public_ip(addr.ip()))
+        .collect();
+    if addresses.is_empty() {
+        return None;
+    }
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(8))
         .user_agent("Ferrochat/0.2")
+        .no_proxy()
+        .redirect(reqwest::redirect::Policy::none())
+        .resolve_to_addrs(host, &addresses)
         .build()
         .ok()?;
     let res = client.get(url).send().await.ok()?;
     if !res.status().is_success() {
         return None;
     }
-    let bytes = res.bytes().await.ok()?;
-    let slice = &bytes[..bytes.len().min(200_000)];
-    let plain = html_to_text(&String::from_utf8_lossy(slice));
+    let mut res = res;
+    let mut bytes = Vec::new();
+    while let Some(chunk) = res.chunk().await.ok()? {
+        let remaining = 200_000usize.saturating_sub(bytes.len());
+        bytes.extend_from_slice(&chunk[..chunk.len().min(remaining)]);
+        if bytes.len() == 200_000 {
+            break;
+        }
+    }
+    let plain = html_to_text(&String::from_utf8_lossy(&bytes));
     let plain: String = plain.chars().take(4000).collect();
     if plain.trim().is_empty() {
         None
     } else {
         Some(plain)
+    }
+}
+
+fn public_ip(ip: IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(ip) => {
+            let [a, b, c, _] = ip.octets();
+            !(ip.is_private()
+                || ip.is_loopback()
+                || ip.is_link_local()
+                || ip.is_multicast()
+                || ip.is_unspecified()
+                || ip == Ipv4Addr::BROADCAST
+                || a == 0
+                || a >= 240
+                || (a == 100 && (64..=127).contains(&b))
+                || (a == 192 && b == 0 && c == 0)
+                || (a == 198 && (b == 18 || b == 19)))
+        }
+        IpAddr::V6(ip) => {
+            if let Some(mapped) = ip.to_ipv4_mapped() {
+                return public_ip(IpAddr::V4(mapped));
+            }
+            !(ip.is_loopback()
+                || ip.is_unspecified()
+                || ip.is_multicast()
+                || (ip.segments()[0] & 0xfe00 == 0xfc00)
+                || (ip.segments()[0] & 0xffc0 == 0xfe80)
+                || ip == Ipv6Addr::LOCALHOST)
+        }
     }
 }
 
@@ -567,6 +622,27 @@ mod tests {
     fn strips_html_and_scripts() {
         let text = html_to_text("<style>x{}</style><p>Hello &amp; <b>world</b></p>");
         assert_eq!(text, "Hello & world");
+    }
+
+    #[test]
+    fn page_fetch_rejects_private_addresses() {
+        for address in [
+            "127.0.0.1",
+            "10.1.2.3",
+            "169.254.169.254",
+            "192.168.1.1",
+            "::1",
+            "fc00::1",
+        ] {
+            assert!(!public_ip(address.parse().unwrap()), "{address}");
+        }
+        assert!(public_ip("8.8.8.8".parse().unwrap()));
+        assert!(public_ip("2606:4700:4700::1111".parse().unwrap()));
+    }
+
+    #[tokio::test]
+    async fn page_fetch_does_not_contact_loopback() {
+        assert!(fetch_text("http://127.0.0.1:12345/private").await.is_none());
     }
 
     #[tokio::test]

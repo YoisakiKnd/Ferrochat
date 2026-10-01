@@ -11,18 +11,30 @@ use ferrochat_core::AppError;
 use serde_json::json;
 use std::sync::Arc;
 
+pub(super) const MAX_UPLOAD_MB: usize = 10;
+pub(super) const MAX_UPLOAD_BYTES: usize = MAX_UPLOAD_MB * 1024 * 1024;
+
 pub(crate) async fn upload_file(
     State(app): State<Arc<App>>,
     user: CurrentUser,
     mut multipart: Multipart,
 ) -> Response {
     let mut saved = None;
-    while let Ok(Some(field)) = multipart.next_field().await {
+    while let Ok(Some(mut field)) = multipart.next_field().await {
         let name = field.file_name().unwrap_or("upload").to_string();
-        let bytes = match field.bytes().await {
-            Ok(b) => b,
-            Err(e) => return fail(AppError::BadRequest(e.to_string())),
-        };
+        let mut bytes = Vec::new();
+        loop {
+            match field.chunk().await {
+                Ok(Some(chunk)) => {
+                    if bytes.len() + chunk.len() > MAX_UPLOAD_BYTES {
+                        return fail(AppError::BadRequest("file exceeds 10 MB limit".into()));
+                    }
+                    bytes.extend_from_slice(&chunk);
+                }
+                Ok(None) => break,
+                Err(e) => return fail(AppError::BadRequest(e.to_string())),
+            }
+        }
         let dir = app.data_dir.join("uploads");
         if tokio::fs::create_dir_all(&dir).await.is_err() {
             return fail(AppError::Internal("cannot create uploads".into()));
@@ -67,8 +79,7 @@ pub(crate) async fn file_content(
     user: CurrentUser,
     Path(id): Path<String>,
 ) -> Response {
-    let _ = user;
-    match app.db.file_path(&id).await {
+    match app.db.file_path(&id, &user.id).await {
         Ok((name, path)) => match tokio::fs::read(path).await {
             Ok(bytes) => {
                 let mime = mime_guess::from_path(&name)

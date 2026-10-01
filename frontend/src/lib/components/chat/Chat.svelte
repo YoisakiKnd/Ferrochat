@@ -3,7 +3,8 @@
 	import { toast } from 'svelte-sonner';
 
 	import { getContext, onDestroy, onMount, tick } from 'svelte';
-	const i18n: Writable<i18nType> = getContext<import('svelte/store').Writable<import('i18next').i18n>>('i18n');
+	const i18n: Writable<i18nType> =
+		getContext<import('svelte/store').Writable<import('i18next').i18n>>('i18n');
 
 	import { goto } from '$app/navigation';
 	import { page } from '$app/stores';
@@ -440,10 +441,30 @@
 		}
 	};
 
+	const socketDisconnectHandler = () => {
+		let interrupted = false;
+		for (const message of Object.values(history.messages)) {
+			if (message.role === 'assistant' && !message.done) {
+				message.done = true;
+				message.error = { content: $i18n.t('Connection lost. Please retry your message.') };
+				interrupted = true;
+			}
+		}
+		if (interrupted) {
+			for (const taskId of taskIds ?? []) {
+				stopTask(localStorage.token, taskId).catch(() => null);
+			}
+			taskIds = null;
+			touchHistory();
+			toast.error($i18n.t('Connection lost. Please retry your message.'));
+		}
+	};
+
 	onMount(async () => {
 		console.log('mounted');
 		window.addEventListener('message', onMessageHandler);
 		$socket?.on('chat-events', chatEventHandler);
+		$socket?.on('disconnect', socketDisconnectHandler);
 		window.addEventListener('ferrochat:prompt', onFerroPrompt);
 
 		if (!$chatId) {
@@ -512,6 +533,7 @@
 		window.removeEventListener('message', onMessageHandler);
 		window.removeEventListener('ferrochat:prompt', onFerroPrompt);
 		$socket?.off('chat-events', chatEventHandler);
+		$socket?.off('disconnect', socketDisconnectHandler);
 		if (historyFrame) cancelAnimationFrame(historyFrame);
 		for (const timer of chatIntervals) clearInterval(timer);
 		chatIntervals.clear();
@@ -845,7 +867,13 @@
 			}
 		}
 
-		taskIds = null;
+		if (
+			!Object.values(history.messages).some(
+				(message) => message.role === 'assistant' && !message.done
+			)
+		) {
+			taskIds = null;
+		}
 	};
 
 	const chatActionHandler = async (chatId, actionId, modelId, responseMessageId, event = null) => {
@@ -1190,6 +1218,10 @@
 
 	const submitPrompt = async (userPrompt, { _raw = false } = {}) => {
 		console.log('submitPrompt', userPrompt, $chatId);
+		if (!$socket?.connected) {
+			toast.error($i18n.t('Chat connection is unavailable. Please try again.'));
+			return;
+		}
 
 		const messages = createMessagesList(history, history.currentId);
 		const _selectedModels = selectedModels.map((modelId) =>
@@ -1430,6 +1462,14 @@
 
 	const sendPromptSocket = async (_history, model, responseMessageId, _chatId) => {
 		const responseMessage = _history.messages[responseMessageId];
+		if (!$socket?.connected) {
+			await handleOpenAIError(
+				{ message: $i18n.t('Chat connection is unavailable. Please try again.') },
+				responseMessage
+			);
+			return;
+		}
+		const sessionId = $socket.id;
 		const userMessage = _history.messages[responseMessage.parentId];
 
 		let files = JSON.parse(JSON.stringify(chatFiles));
@@ -1568,7 +1608,7 @@
 				},
 				model_item: $models.find((m) => m.id === model.id),
 
-				session_id: $socket?.id,
+				session_id: sessionId,
 				chat_id: $chatId,
 				id: responseMessageId,
 				follow_up: ($settings?.followUps ?? true) && !$temporaryChatEnabled,
@@ -1618,6 +1658,14 @@
 		if (res) {
 			if (res.error) {
 				await handleOpenAIError(res.error, responseMessage);
+			} else if (!$socket?.connected || $socket.id !== sessionId) {
+				await stopTask(localStorage.token, res.task_id).catch(() => null);
+				await handleOpenAIError(
+					{ message: $i18n.t('Connection lost. Please retry your message.') },
+					responseMessage
+				);
+			} else if (history.messages[responseMessageId]?.done) {
+				await stopTask(localStorage.token, res.task_id).catch(() => null);
 			} else {
 				if (taskIds) {
 					taskIds.push(res.task_id);
@@ -1674,28 +1722,25 @@
 	};
 
 	const stopResponse = async () => {
-		if (taskIds) {
-			for (const taskId of taskIds) {
-				const res = await stopTask(localStorage.token, taskId).catch((error) => {
-					toast.error(`${error}`);
-					return null;
-				});
-			}
-
-			taskIds = null;
-
-			const responseMessage = history.messages[history.currentId];
-			// Set all response messages to done
-			for (const messageId of history.messages[responseMessage.parentId].childrenIds) {
+		const tasks = taskIds ?? [];
+		taskIds = null;
+		const responseMessage = history.messages[history.currentId];
+		const parent = responseMessage && history.messages[responseMessage.parentId];
+		for (const messageId of parent?.childrenIds ?? []) {
+			if (history.messages[messageId]?.role === 'assistant') {
 				history.messages[messageId].done = true;
 			}
-
-			history.messages[history.currentId] = responseMessage;
-
-			if (autoScroll) {
-				scrollToBottom();
-			}
 		}
+		touchHistory();
+		if (autoScroll) scrollToBottom();
+		await Promise.all(
+			tasks.map((taskId) =>
+				stopTask(localStorage.token, taskId).catch((error) => {
+					toast.error(`${error}`);
+					return null;
+				})
+			)
+		);
 	};
 
 	const submitMessage = async (parentId, prompt) => {
@@ -1742,7 +1787,9 @@
 			}
 
 			await sendPrompt(history, userPrompt, userMessage.id, {
-				modelId: modelId || ((userMessage?.models ?? [...selectedModels]).length > 1 ? message.model : null),
+				modelId:
+					modelId ||
+					((userMessage?.models ?? [...selectedModels]).length > 1 ? message.model : null),
 				modelIdx: message.modelIdx
 			});
 		}
@@ -1948,24 +1995,24 @@
 						>
 							<div class=" h-full w-full flex flex-col">
 								{#if MessagesComp}
-								<svelte:component
-									this={MessagesComp}
-									chatId={$chatId}
-									bind:history
-									bind:autoScroll
-									bind:prompt
-									{selectedModels}
-									{atSelectedModel}
-									{sendPrompt}
-									{showMessage}
-									{submitMessage}
-									{continueResponse}
-									{regenerateResponse}
-									{mergeResponses}
-									{chatActionHandler}
-									{addMessages}
-									bottomPadding={files.length > 0}
-								/>
+									<svelte:component
+										this={MessagesComp}
+										chatId={$chatId}
+										bind:history
+										bind:autoScroll
+										bind:prompt
+										{selectedModels}
+										{atSelectedModel}
+										{sendPrompt}
+										{showMessage}
+										{submitMessage}
+										{continueResponse}
+										{regenerateResponse}
+										{mergeResponses}
+										{chatActionHandler}
+										{addMessages}
+										bottomPadding={files.length > 0}
+									/>
 								{/if}
 							</div>
 						</div>
@@ -2064,28 +2111,28 @@
 			</div>
 
 			{#if ChatControlsComp}
-			<svelte:component
-				this={ChatControlsComp}
-				bind:this={controlPaneComponent}
-				bind:history
-				bind:chatFiles
-				bind:params
-				bind:files
-				bind:pane={controlPane}
-				chatId={$chatId}
-				modelId={selectedModelIds?.at(0) ?? null}
-				models={selectedModelIds.reduce((a, e, i, arr) => {
-					const model = $models.find((m) => m.id === e);
-					if (model) {
-						return [...a, model];
-					}
-					return a;
-				}, [])}
-				{submitPrompt}
-				{stopResponse}
-				{showMessage}
-				{eventTarget}
-			/>
+				<svelte:component
+					this={ChatControlsComp}
+					bind:this={controlPaneComponent}
+					bind:history
+					bind:chatFiles
+					bind:params
+					bind:files
+					bind:pane={controlPane}
+					chatId={$chatId}
+					modelId={selectedModelIds?.at(0) ?? null}
+					models={selectedModelIds.reduce((a, e, i, arr) => {
+						const model = $models.find((m) => m.id === e);
+						if (model) {
+							return [...a, model];
+						}
+						return a;
+					}, [])}
+					{submitPrompt}
+					{stopResponse}
+					{showMessage}
+					{eventTarget}
+				/>
 			{/if}
 		</div>
 	{:else if loading}

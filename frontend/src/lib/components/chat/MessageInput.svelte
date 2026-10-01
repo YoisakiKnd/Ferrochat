@@ -526,7 +526,7 @@
 							}}
 							on:confirm={async (e) => {
 								const { text, filename } = e.detail;
-								prompt = `${prompt}${text} `;
+								prompt = `${prompt}${prompt && !/\s$/.test(prompt) ? ' ' : ''}${text} `;
 
 								recording = false;
 
@@ -1197,6 +1197,11 @@
 									</div>
 
 									<div class="self-end flex space-x-1 mr-1 shrink-0">
+										<Tooltip content={$i18n.t('Record voice')}>
+											<button type="button" aria-label={$i18n.t('Record voice')} class="p-1.5 rounded-full hover:bg-gray-100 dark:hover:bg-gray-800" on:click={() => (recording = true)}>
+												<svg class="size-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="9" y="2" width="6" height="12" rx="3" /><path d="M5 10v2a7 7 0 0 0 14 0v-2M12 19v3M8 22h8" /></svg>
+											</button>
+										</Tooltip>
 
 										{#if (taskIds && taskIds.length > 0) || (history.currentId && history.messages[history.currentId]?.done != true)}
 											<div class=" flex items-center">

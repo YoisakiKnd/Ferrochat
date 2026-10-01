@@ -6,7 +6,7 @@
 
 Ferrochat 是单机自托管的聊天程序。网页来自 Open WebUI v0.6.5，后端换成一个 Rust 二进制。许可 BSD-3-Clause，见仓库根目录的 `LICENSE` 和 `NOTICE`。前端底子停在 v0.6.5，不要把 Open WebUI v0.6.6 及以后的提交合并进来。
 
-它不是多租户服务。库里还没有用户时注册页开着，第一个人成为管理员，之后 `/api/config` 把 `enable_signup` 设成 false。没有 OAuth、LDAP、API Key 登录、多用户管理面板。
+它不是多租户服务。库里还没有用户时注册页开着，数据库原子地只允许第一个人成为管理员，之后 `/api/config` 把 `enable_signup` 设成 false。已有数据库若意外含有多个账户，只有最早创建的账户可以登录。没有 OAuth、LDAP、API Key 登录、多用户管理面板。
 
 一个进程同时做三件事：用 axum 提供 HTTP、用 socket.io 推流、用 rust-embed 或磁盘目录提供静态网页。默认监听 `0.0.0.0:8080`。数据目录里有 `ferrochat.db`、`uploads/` 和 `secret.key`。
 
@@ -44,11 +44,11 @@ Workspace 版本 0.1.0，edition 2021。主要依赖：axum 0.8、sqlx 0.8（只
 2. `Config::from_env()` 读环境变量，建数据目录。
 3. 密钥：有 `FERROCHAT_SECRET_KEY` 就用它；否则读 `数据目录/secret.key`；还没有就生成 UUID 写进去。这把密钥签 JWT。多进程必须用同一个环境变量，否则令牌互相不认。
 4. `Db::connect` 打开 SQLite，跑迁移，写入内置提供商。
-5. Socket.IO 挂在 `/ws/socket.io`。新连接放进 `App.sockets`，并推一条空的 `user-list` 和 `usage`，因为没有多用户在线列表。
+5. Socket.IO 挂在 `/ws/socket.io`。连接时验证 JWT 并确认是首个账户，断开时从 `App.sockets` 移除；连接成功后推一条空的 `user-list` 和 `usage`，因为没有多用户在线列表。
 6. 路由：`/health`、`http::router()` 里的全部 `/api`，其余路径落到 SPA。静态文件优先读 `FERROCHAT_FRONTEND_DIR`，没有就用编译时嵌进二进制的 `frontend/build`。
 7. CORS 全开，外面套 tracing。`axum::serve` 监听到进程退出。
 
-`App` 里除了数据库和密钥，还有：按任务 id 存的取消令牌、按对话 id 存的任务列表、密钥轮换计数器、数据目录、可选的前端目录。
+`App` 里除了数据库和密钥，还有：按任务 id 存的账户和取消令牌、按账户及对话 id 存的运行中任务列表、密钥轮换计数器、数据目录、可选的前端目录。
 
 未知的 `/api` 路径应返回 JSON 404。早期漏掉的路径会掉进 SPA，浏览器拿到 HTML，前端按 JSON 解析就失败。这是改路由时要守的约束。
 
@@ -58,7 +58,7 @@ Workspace 版本 0.1.0，edition 2021。主要依赖：axum 0.8、sqlx 0.8（只
 
 密码用 Argon2，盐来自 UUID。登录成功签发 JWT，声明里只有用户 id，过期时间 14 天。请求带 `Authorization: Bearer <token>`。前端把令牌放在 `localStorage.token`。
 
-`/api/config` 不需要登录也能看。它告诉前端：产品名 Ferrochat、版本、是否还在引导（用户数为 0）、注册是否开放、WebSocket 开着。登录之后再补一批开关。联网是否可用，取决于 `config` 表里的 `web_search` 已经配了引擎，或者打开了「优先用模型自己的搜索」。文件限制写死：单文件约 10 MB，一次最多 5 个。
+`/api/config` 不需要登录也能看。它告诉前端：产品名 Ferrochat、版本、是否还在引导（用户数为 0）、注册是否开放、WebSocket 开着。登录之后再补一批开关。联网是否可用，取决于 `config` 表里的 `web_search` 已经配了引擎，或者打开了「优先用模型自己的搜索」。上传限制写死：单文件最多 10 MiB，前端一次最多 5 个。
 
 用户设置存在 `users.settings_json`，接口是 `GET/POST /api/v1/users/user/settings`。最近消息条数、自动摘要、记忆开关、富文本开关都在这份 JSON 里，不是单独的列。
 
@@ -182,7 +182,7 @@ Workspace 版本 0.1.0，edition 2021。主要依赖：axum 0.8、sqlx 0.8（只
 
 MCP 客户端说 JSON-RPC：`initialize`、`tools/list`、`tools/call`。传输是子进程 stdio，或 Streamable HTTP。工具描述进模型的 tools 数组。容器里要跑 `npx` / `uvx` 时用 Docker `full` 阶段；`slim` 没有 Node 和 uv。
 
-音频配置在 `config` 键 `audio`。`stt_engine` 默认 `web`，用浏览器语音识别。改成远程后，`/api/v1/audio/transcriptions` 和 `/api/v1/audio/speech` 转发到兼容 OpenAI 的地址。
+音频配置在 `config` 键 `audio`。`stt_engine` 默认 `web`，用浏览器语音识别。改成远程后，`/api/v1/audio/transcriptions` 和 `/api/v1/audio/speech` 转发到兼容 OpenAI 的地址。转写上传最多 20 MiB；转写响应最多 1 MiB，语音响应最多 20 MiB。
 
 工具页在前端自己调 `/api/chat/completions`，系统提示按翻译、润色、总结写死，不新建 `chats` 行。总结可以把 `features.web_search` 设为真。历史记在浏览器 `localStorage` 键 `ferrochat-tool-history`，最多 20 条，可以单条删。模型选择记在 `ferrochat-tool-model`。
 
@@ -267,7 +267,7 @@ MCP 客户端说 JSON-RPC：`initialize`、`tools/list`、`tools/call`。传输�
 
 后端测试：`cargo test`。覆盖能力推断、mock 流、搜索 HTML 清洗和 SearXNG JSON、摘要复用、以及 `backend/crates/server/tests/api.rs` 里的接口（登录、聊天 JSON、视觉消息、批量加模型、工具流、用量、记忆、没有内置预设污染、归档往返与取消归档、标签增删与筛选）。
 
-前端：`npm run build`、`npm run check`、Playwright。`frontend/e2e/smoke.spec.ts` 三条常规跑；`frontend/e2e/chats.spec.ts` 两条标题带 `@chats`，只在 v* 标签构建里跑（`--grep "@chats"`），覆盖归档列表/取消归档/一键归档和标签筛选/删除这些前端早就调用、后端过去缺路由或空实现的接口。Playwright 自己拉起后端，端口默认 8091，前端用 `frontend/build`。若环境里有 `PLAYWRIGHT_BROWSERS_PATH` 指到不存在的目录，要先去掉这个变量。
+前端：`npm run build`、`npm run check`、Playwright。`frontend/e2e/smoke.spec.ts` 和 `frontend/e2e/chats.spec.ts` 都在 PR 与 main 推送时运行；后者覆盖归档列表/取消归档/一键归档和标签筛选/删除。Playwright 自己拉起后端，端口默认 8091，前端用 `frontend/build`。若环境里有 `PLAYWRIGHT_BROWSERS_PATH` 指到不存在的目录，要先去掉这个变量。
 
 本地手工看过的数据目录是 `/tmp/ferrochat-browser`，账号 `ada@ferrochat.local` / `secret1`。这不是仓库里的默认账号，只是那台机器上的浏览器数据。
 
@@ -307,4 +307,4 @@ cd ../backend && FERROCHAT_FRONTEND_DIR=../frontend/build cargo run --bin ferroc
 - 能力推断靠模型名字，冷门模型会标错，需要在管理页手改。
 - 工具调用最多 5 轮，密钥出错不会在同一次生成里自动换钥匙。
 - 归档/标签接口补全、console 剥离、CI 触发扩展、迁移守卫、0.2.0 版本号已在 2026-09-26 本机实测收口：`cargo fmt --check` 干净（此前全仓从未格式化过，本次连带 `gemini.rs`/`openai.rs`/`chat.rs`/`files.rs` 等既有文件一并格式化）；`cargo test` 15 个测试 0 失败（含归档切换、标签增删两条新集成测试）；`vite build` 成功，产物中 `console.log(` 调用从源码的 479 处降到 1 处（第三方库的条件引用，非调用点）；Playwright 用例仍未在本机跑。
-- 迁移守卫核对 `migrations/` 的文件名白名单（001–005，缺文件或多文件都红）并校验每个已存在的 `.sql.sha256`。001–005 的摘要均已生成并校验通过。新增迁移时同步生成摘要并加白名单条目：`cd backend/crates/db/migrations && sha256sum <新文件>.sql | cut -d' ' -f1 > <新文件>.sql.sha256`。
+- 迁移守卫核对 `migrations/` 的文件名白名单（001–006，缺文件或多文件都红）并校验每个已存在的 `.sql.sha256`。001–006 的摘要均已生成并校验通过。新增迁移时同步生成摘要并加白名单条目：`cd backend/crates/db/migrations && sha256sum <新文件>.sql | cut -d' ' -f1 > <新文件>.sql.sha256`。

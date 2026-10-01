@@ -120,6 +120,11 @@ impl FromRequestParts<Arc<App>> for CurrentUser {
             .or(cookie)
             .ok_or_else(|| err(AppError::Unauthorized("not authenticated".into())))?;
         let id = state.keys.user_id(&token).map_err(err)?;
+        if !state.db.is_primary_user(&id).await.map_err(err)? {
+            return Err(err(AppError::Unauthorized(
+                "account is not the primary user".into(),
+            )));
+        }
         let value = state.db.user_by_id(&id).await.map_err(err)?;
         Ok(CurrentUser {
             id: value["id"].as_str().unwrap_or_default().to_string(),

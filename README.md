@@ -12,6 +12,7 @@ cd ../backend && FERROCHAT_FRONTEND_DIR=../frontend/build cargo run --bin ferroc
 ```
 
 Open http://127.0.0.1:8080. The first account you create is the only account.
+On an existing database with multiple accounts, only the earliest account can sign in after this update.
 
 ## Docker
 
@@ -21,7 +22,7 @@ docker compose up -d
 
 The compose file pulls `ghcr.io/yoisakiknd/ferrochat`. Set `FERROCHAT_TAG=0.2` to pin a release; the default is `latest`.
 
-CI checks (Rust format and tests, frontend build, size report, type-error baseline, and the smoke Playwright suite) run on pushes to `main` and on pull requests. Published images, GitHub Release assets, the `@chats` Playwright suite, and multi-arch manifests run only when a `v*` tag is pushed. `v1.2.3` publishes `1.2.3`, `1.2`, and `latest` for `linux/amd64` and `linux/arm64`.
+CI checks (Rust format and tests, frontend build, size report, type-error baseline, and the full Playwright suite) run on pushes to `main` and on pull requests. Published images, GitHub Release assets, and multi-arch manifests run only when a `v*` tag is pushed. `v1.2.3` publishes `1.2.3`, `1.2`, and `latest` for `linux/amd64` and `linux/arm64`.
 
 To build locally:
 

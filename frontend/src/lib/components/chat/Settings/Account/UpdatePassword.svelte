@@ -9,29 +9,30 @@
 	let currentPassword = '';
 	let newPassword = '';
 	let newPasswordConfirm = '';
+	let submitting = false;
 
 	const updatePasswordHandler = async () => {
+		if (submitting) return;
 		if (newPassword === newPasswordConfirm) {
+			submitting = true;
 			const res = await updateUserPassword(localStorage.token, currentPassword, newPassword).catch(
 				(error) => {
 					toast.error(`${error}`);
 					return null;
 				}
 			);
+			submitting = false;
 
 			if (res) {
 				toast.success($i18n.t('Successfully updated.'));
+				currentPassword = '';
+				newPassword = '';
+				newPasswordConfirm = '';
 			}
-
-			currentPassword = '';
-			newPassword = '';
-			newPasswordConfirm = '';
 		} else {
 			toast.error(
 				`The passwords you entered don't quite match. Please double-check and try again.`
 			);
-			newPassword = '';
-			newPasswordConfirm = '';
 		}
 	};
 </script>
@@ -80,6 +81,7 @@
 						bind:value={newPassword}
 						placeholder={$i18n.t('Enter your new password')}
 						autocomplete="new-password"
+						minlength="6"
 						required
 					/>
 				</div>
@@ -95,6 +97,7 @@
 						bind:value={newPasswordConfirm}
 						placeholder={$i18n.t('Confirm your new password')}
 						autocomplete="off"
+						minlength="6"
 						required
 					/>
 				</div>
@@ -103,6 +106,7 @@
 
 		<div class="mt-3 flex justify-end">
 			<button
+				disabled={submitting}
 				class="px-3.5 py-1.5 text-sm font-medium bg-black hover:bg-gray-900 text-white dark:bg-white dark:text-black dark:hover:bg-gray-100 transition rounded-full"
 			>
 				{$i18n.t('Update password')}
